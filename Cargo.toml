@@ -1,5 +1,7 @@
 [package]
 name = "go-fish"
+description = "The classic Go Fish card game"
+license = "MIT"
 version = "0.1.0"
 edition = "2024"
 

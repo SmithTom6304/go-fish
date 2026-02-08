@@ -1,11 +1,8 @@
-use go_fish::GameState;
-use go_fish::Player;
-use go_fish::hook::Hook;
-use go_fish::player::PlayerId;
+use go_fish::*;
+use rand::random_range;
 
-pub fn fish_from_ahead(game_state: &GameState) -> Hook {
-    let player = game_state.players.get(game_state.player_turn).unwrap();
-    assert!(player.active);
+pub fn _fish_from_ahead(game: &Game) -> Hook {
+    let player = game.players.get(game.player_turn).unwrap();
 
     let mut rank = player
         .hand
@@ -16,23 +13,40 @@ pub fn fish_from_ahead(game_state: &GameState) -> Hook {
     rank.sort();
     let rank = rank.first().unwrap();
 
-    let player_ahead = get_player_ahead(game_state.player_turn, &game_state.players);
+    let player_ahead = _get_player_ahead(game.player_turn, &game.players);
 
     Hook {
-        fisher: player.id,
         target: player_ahead,
-        rank: rank.clone(),
+        rank: *rank,
     }
 }
 
-fn get_player_ahead(index: usize, players: &Vec<Player>) -> PlayerId {
-    let mut new_index = (index + 1) % players.len();
-    for _ in players {
-        let p = players.get(new_index).unwrap();
-        if p.active {
-            return p.id;
-        }
-        new_index = (new_index + 1) % players.len();
+pub fn fish_random_rank_and_player(game: &Game) -> Hook {
+    let player = game.players.get(game.player_turn).unwrap();
+
+    let mut rank = player
+        .hand
+        .books
+        .iter()
+        .map(|book| book.rank)
+        .collect::<Vec<_>>();
+    rank.sort();
+    let r = random_range(0..rank.len());
+    let rank = rank.get(r).unwrap();
+
+    let mut r = random_range(0..game.players.len());
+    if r == game.player_turn {
+        r = (r + 1) % game.players.len();
     }
-    panic!("All players inactive!")
+    let player_ahead = game.players.get(r).unwrap().id;
+
+    Hook {
+        target: player_ahead,
+        rank: *rank,
+    }
+}
+
+fn _get_player_ahead(index: usize, players: &[Player]) -> PlayerId {
+    let new_index = (index + 1) % players.len();
+    players.get(new_index).unwrap().id
 }
