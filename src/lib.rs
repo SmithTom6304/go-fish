@@ -105,7 +105,7 @@ pub struct Game {
     pub deck: Deck,
     pub players: Vec<Player>,
     pub inactive_players: Vec<InactivePlayer>,
-    pub player_turn: usize,
+    player_turn: usize,
 }
 
 impl Deck {
@@ -125,7 +125,7 @@ impl Deck {
         self.cards.is_empty()
     }
 
-    /// Draws a card from the deck
+    /// Draws a card from the deck´
     /// ```
     /// use go_fish::Deck;
     /// let mut deck = Deck::new();
@@ -342,6 +342,11 @@ impl Game {
         };
 
         Ok(())
+    }
+
+    /// Get the current player
+    pub fn get_current_player(&self) -> &Player {
+        &self.players[self.player_turn]
     }
 
     fn deal_player(id: PlayerId, hand_size: usize, deck: &mut Deck) -> Player {
