@@ -1,9 +1,12 @@
 [package]
 name = "go-fish"
 description = "The classic Go Fish card game"
+readme = "README.md"
 license = "MIT"
 version = "0.1.1"
 edition = "2024"
+repository = "https://github.com/SmithTom6304/go-fish"
+documentation = "https://docs.rs/go-fish"
 
 [dependencies]
 enum-iterator = "2.3.0"
