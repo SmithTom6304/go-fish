@@ -5,6 +5,7 @@
 use enum_iterator::{all, Sequence};
 use rand::prelude::SliceRandom;
 use serde::{Deserialize, Serialize};
+use std::fmt::Display;
 
 /// A playing card
 #[derive(Debug, PartialEq, Clone, Copy, Serialize, Deserialize)]
@@ -23,7 +24,18 @@ pub enum Suit {
 }
 
 /// The rank (or value) of a [Card]
-#[derive(Debug, PartialEq, Eq, Sequence, Clone, Copy, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    PartialEq,
+    Eq,
+    Sequence,
+    Clone,
+    Copy,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize
+)]
 pub enum Rank {
     Two,
     Three,
@@ -40,6 +52,27 @@ pub enum Rank {
     Ace,
 }
 
+impl Display for Rank {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let s = match self {
+            Rank::Two => "Two",
+            Rank::Three => "Three",
+            Rank::Four => "Four",
+            Rank::Five => "Five",
+            Rank::Six => "Six",
+            Rank::Seven => "Seven",
+            Rank::Eight => "Eight",
+            Rank::Nine => "Nine",
+            Rank::Ten => "Ten",
+            Rank::Jack => "Jack",
+            Rank::Queen => "Queen",
+            Rank::King => "King",
+            Rank::Ace => "Ace",
+        };
+        write!(f, "{}", s)
+    }
+}
+
 /// A deck of [Cards](Card)
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Deck {
@@ -47,27 +80,27 @@ pub struct Deck {
 }
 
 /// A collection of three or fewer [Cards](Card) of the same [Rank]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct IncompleteBook {
     pub rank: Rank,
     pub cards: Vec<Card>,
 }
 
 /// A collection of four [Cards](Card) of the same [Rank]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Copy, Clone)]
 pub struct CompleteBook {
     pub rank: Rank,
     pub cards: [Card; 4],
 }
 
 /// A players hand
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Hand {
     pub books: Vec<IncompleteBook>,
 }
 
 /// A player actively trying to win the game
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Player {
     pub id: PlayerId,
     pub hand: Hand,
@@ -76,13 +109,13 @@ pub struct Player {
 
 /// A player who no longer has any viable moves. They can still win the game, if they have
 /// more [Completed Books](CompleteBook) than any other player at the end of the game
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct InactivePlayer {
     pub id: PlayerId,
     pub completed_books: Vec<CompleteBook>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Serialize, Deserialize, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct PlayerId(pub u8);
 
 /// A request for another players cards
@@ -97,6 +130,7 @@ pub struct Hook {
 pub enum TurnError {
     /// The [Hooks](Hook) target is not a player in the game
     TargetNotFound(PlayerId),
+    GameIsFinished
 }
 
 /// Handling for a game of Go Fish
@@ -105,6 +139,7 @@ pub struct Game {
     pub deck: Deck,
     pub players: Vec<Player>,
     pub inactive_players: Vec<InactivePlayer>,
+    pub is_finished: bool,
     player_turn: usize,
 }
 
@@ -193,7 +228,14 @@ impl From<Card> for IncompleteBook {
     }
 }
 
-pub(crate) enum HookResult {
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct GameResult {
+    pub winners: Vec<InactivePlayer>,
+    pub losers: Vec<InactivePlayer>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub enum HookResult {
     Catch(IncompleteBook),
     GoFish,
 }
@@ -278,13 +320,18 @@ impl Game {
         Game {
             deck,
             players,
+            is_finished: false,
             inactive_players: vec![],
             player_turn: 0,
         }
     }
 
     /// Take a turn in the game
-    pub fn take_turn(&mut self, hook: Hook) -> Result<(), TurnError> {
+    pub fn take_turn(&mut self, hook: Hook) -> Result<HookResult, TurnError> {
+        if self.is_finished {
+            return Err(TurnError::GameIsFinished);
+        }
+
         let player_order = self.players.iter().map(|p| p.id).collect::<Vec<PlayerId>>();
 
         let (mut fisher, target) =
@@ -301,7 +348,7 @@ impl Game {
 
         let result = target.receive_hook(hook.rank);
 
-        match result {
+        match result.clone() {
             HookResult::Catch(catch) => {
                 fisher.add_book(catch);
                 let fisher = match fisher.hand.books.is_empty() {
@@ -341,12 +388,34 @@ impl Game {
             }
         };
 
-        Ok(())
+        if self.players.is_empty() {
+            self.is_finished = true;
+        }
+
+        Ok(result)
     }
 
     /// Get the current player
     pub fn get_current_player(&self) -> &Player {
         &self.players[self.player_turn]
+    }
+
+    pub fn get_game_result(&self) -> Option<GameResult> {
+        if !self.is_finished {
+            return None;
+        }
+
+        let max_books = self.inactive_players.iter().map(|p| p.completed_books.len()).max().unwrap();
+        let mut winners = vec![];
+        let mut losers = vec![];
+        for player in self.inactive_players.clone().into_iter() {
+            if player.completed_books.len() == max_books {
+                winners.push(player);
+            } else {
+                losers.push(player);
+            }
+        };
+        Some(GameResult { winners, losers })
     }
 
     fn deal_player(id: PlayerId, hand_size: usize, deck: &mut Deck) -> Player {
@@ -373,6 +442,17 @@ impl Game {
         if self.players.is_empty() {
             return;
         }
+
+        if self.players.len() == 1 {
+            let player = self.players.remove(0);
+            if !player.hand.books.is_empty() {
+                panic!("Shouldn't get here I don't think")
+            }
+            let player = InactivePlayer { id: player.id, completed_books: player.completed_books };
+            self.inactive_players.push(player);
+            return;
+        }
+
         let mut new_turn = (self.player_turn + 1) % self.players.len();
         let player_order = self.players.iter().map(|p| p.id).collect::<Vec<PlayerId>>();
 

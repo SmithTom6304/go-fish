@@ -65,6 +65,7 @@ fn current_player_has_empty_hand_at_end_of_turn_then_draws() {
         players: vec![player_1, player_2],
         inactive_players: Default::default(),
         player_turn: 0,
+        is_finished: false,
     };
 
     // Act
@@ -141,6 +142,7 @@ fn new_player_has_empty_hand_when_it_is_about_to_be_their_turn_then_draws() {
         players: vec![player_1, player_2],
         inactive_players: Default::default(),
         player_turn: 0,
+        is_finished: false,
     };
 
     game.take_turn(hook).expect("Game state should be valid"); // Catch, so still player 1's turn.
