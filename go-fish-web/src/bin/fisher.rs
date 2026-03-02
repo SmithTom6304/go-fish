@@ -10,8 +10,13 @@ use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::MaybeTlsStream;
 use tokio_tungstenite::WebSocketStream;
+use tracing::{debug, error, info};
+use tracing_subscriber::filter::EnvFilter;
+use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 
 fn parse_hook_request(s: &str) -> anyhow::Result<ClientHookRequest> {
+    debug!(value = s, "Parsing hook request");
     let parts = s.split(' ').collect::<Vec<&str>>();
     if parts.len() != 2 {
         return Err(anyhow::anyhow!("Invalid hook request"));
@@ -19,7 +24,6 @@ fn parse_hook_request(s: &str) -> anyhow::Result<ClientHookRequest> {
 
     let target_name = parts[0].trim().to_string();
     let rank = parts[1].trim().to_lowercase().to_string();
-    log::info!("Target: '{}', rank: '{}'", target_name, rank);
     let rank = match rank.as_str() {
         "ace" => Rank::Ace,
         "king" => Rank::King,
@@ -46,23 +50,23 @@ fn handle_server_message(message: Message) -> anyhow::Result<()> {
     let server_message = serde_json::from_str::<ServerMessage>(server_message)?;
     match server_message {
         ServerMessage::HookAndResult(hook_and_result) => {
-            log::debug!("Received hook and result {:?}", hook_and_result);
+            debug!(?hook_and_result, "Received hook and result");
             handle_hook_and_result(hook_and_result)
         }
         ServerMessage::PlayerState(state) => {
-            log::debug!("Received player state {:?}", state);
+            debug!(?state, "Received player state");
             handle_player_state(state)
         },
         ServerMessage::PlayerTurn(player_turn) => {
-            log::debug!("Received player turn {:?}", player_turn);
+            debug!(?player_turn, "Received player turn");
             handle_player_turn(player_turn)
         },
         ServerMessage::PlayerIdentity(identity) => {
-            log::debug!("Received player identity {:?}", identity);
+            debug!(player_identity = ?identity, "Received player identity");
             handle_player_identity(identity)
         },
         ServerMessage::GameResult(game_result) => {
-            log::debug!("Received game result {:?}", game_result);
+            debug!(?game_result, "Received game result");
             handle_game_result(game_result)
         }
     }
@@ -106,6 +110,7 @@ fn handle_game_result(result: GameResult) {
 }
 
 async fn run_io(io_tx: mpsc::Sender<Message>) {
+    debug!("Running io handler");
     loop {
         let read_io_task = task::spawn_blocking(|| {
             let mut s = String::new();
@@ -117,36 +122,50 @@ async fn run_io(io_tx: mpsc::Sender<Message>) {
         match req {
             Ok(req) => {
                 let client_req = ClientMessage::Hook(req);
+                debug!(message = ?client_req, "Sending io client message");
                 io_tx.send(Message::text::<String>(serde_json::to_string(&client_req).unwrap())).await.unwrap()
             },
-            Err(err) => log::error!("{}", err)
+            Err(err) => error!(error = %err, "Error parsing hook request")
         }
     }
 }
 
 async fn run_websocket(mut ws: WebSocketStream<MaybeTlsStream<TcpStream>>, mut io_rx: mpsc::Receiver<Message>) {
+    debug!("Running websocket handler");
     loop {
         tokio::select! {
                 msg = ws.next() => {
-                    log::info!("Received server message: {:?}", msg);
-                    match handle_server_message(msg.unwrap().unwrap()) {
-                    Ok(()) => log::info!("Handled server message"),
-                    Err(err) => log::error!("Error handling server message - {}", err)
+                    let server_message = msg.unwrap().unwrap();
+                    debug!(%server_message, "Received server message");
+                    match handle_server_message(server_message.clone()) {
+                    Ok(()) => debug!(%server_message, "Handled server message successfully"),
+                    Err(err) => error!(%server_message, "Error handling server message")
                 }},
                 msg = io_rx.recv() => {
                     let msg = msg.unwrap();
+                    debug!(message = %msg, "Received io message");
                     ws.send(msg).await.unwrap();
                 }
             }
     }
 }
 
+fn init_logging() {
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::fmt::layer())
+        .with(EnvFilter::from_default_env())
+        .init();
+}
+
 #[tokio::main]
 async fn main() {
-    env_logger::init();
+    init_logging();
+    info!("Starting fisher");
 
-    let (socket, _) = connect_async("ws://localhost:9001").await.unwrap();
+    let server_address = "ws://localhost:9001";
+    let (socket, _) = connect_async(server_address).await.unwrap();
     let(io_tx, io_rx) = mpsc::channel::<Message>(10);
+    info!(server_address, "Connected to server");
 
     _ = tokio::spawn(run_io(io_tx));
     _ = tokio::spawn(run_websocket(socket, io_rx)).await;
