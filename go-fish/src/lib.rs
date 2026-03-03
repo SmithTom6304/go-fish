@@ -6,6 +6,8 @@ use enum_iterator::{all, Sequence};
 use rand::prelude::SliceRandom;
 use serde::{Deserialize, Serialize};
 use std::fmt::Display;
+use tracing::debug;
+use tracing::warn;
 
 /// A playing card
 #[derive(Debug, PartialEq, Clone, Copy, Serialize, Deserialize)]
@@ -305,6 +307,7 @@ impl Player {
 impl Game {
     /// Create a new Game of Go Fish, with the given [Deck] and number of players
     pub fn new(deck: Deck, player_count: u8) -> Game {
+        debug!(?deck, player_count, "Creating new Game");
         let hand_size = match player_count {
             2 | 3 => 7,
             _ => 5,
@@ -328,7 +331,15 @@ impl Game {
 
     /// Take a turn in the game
     pub fn take_turn(&mut self, hook: Hook) -> Result<HookResult, TurnError> {
+        debug!(game.players = ?self.players,
+            game.inactive_players = ?self.inactive_players,
+            game.is_deck_empty = self.deck.is_empty(),
+            game.player_turn = self.player_turn,
+            game.is_finished = self.is_finished,
+            ?hook,
+            "Taking turn");
         if self.is_finished {
+            warn!("Taking turn when game is finished");
             return Err(TurnError::GameIsFinished);
         }
 
@@ -342,11 +353,13 @@ impl Game {
             None => {
                 self.players.push(fisher);
                 Self::reorder_players(&mut self.players, &player_order);
+                debug!(hook.target = hook.target.0, "Target player was not found");
                 return Err(TurnError::TargetNotFound(hook.target));
             }
         };
 
         let result = target.receive_hook(hook.rank);
+        debug!(?target, ?hook, ?result, "Target received hook");
 
         match result.clone() {
             HookResult::Catch(catch) => {
@@ -356,6 +369,7 @@ impl Game {
                     false => PlayerEmptyHandOutcome::Active(fisher),
                 };
 
+                debug!(?fisher, "Handled fisher hand state");
                 match fisher {
                     PlayerEmptyHandOutcome::Active(fisher) => {
                         self.players.push(fisher);
@@ -391,6 +405,13 @@ impl Game {
         if self.players.is_empty() {
             self.is_finished = true;
         }
+
+        debug!(game.players = ?self.players,
+            game.inactive_players = ?self.inactive_players,
+            game.is_deck_empty = self.deck.is_empty(),
+            game.player_turn = self.player_turn,
+            game.is_finished = self.is_finished,
+            "Finished taking turn");
 
         Ok(result)
     }
@@ -523,12 +544,14 @@ impl Game {
     }
 }
 
+#[derive(Debug)]
 pub(crate) enum CombineBookResult {
     Combined(IncompleteBook),
     NotCombined(IncompleteBook, IncompleteBook),
     Completed(CompleteBook),
 }
 
+#[derive(Debug)]
 enum PlayerEmptyHandOutcome {
     Active(Player),
     Inactive(InactivePlayer),
