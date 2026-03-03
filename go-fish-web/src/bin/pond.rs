@@ -48,9 +48,9 @@ struct ControllerLookup {
 }
 
 struct WebsocketCommunicator {
-    pub hook_tx: mpsc::Sender<Message>,
-    pub client_rx: mpsc::Receiver<Message>,
-    pub client_broadcast_rx: broadcast::Receiver<Message>,
+    pub controller_tx: mpsc::Sender<Message>,
+    pub controller_rx: mpsc::Receiver<Message>,
+    pub controller_broadcast_rx: broadcast::Receiver<Message>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -206,12 +206,12 @@ async fn run_websocket(peer: SocketAddr, mut comm: WebsocketCommunicator, mut ws
     debug!(client_address = %peer, "Running websocket handler");
     loop {
         tokio::select! {
-            msg = comm.client_rx.recv() => {
+            msg = comm.controller_rx.recv() => {
                 let message = msg.unwrap();
                 trace!(client_address = %peer, %message, "Received message from controller, sending to client");
                 _ = ws_stream.send(message).await;
             },
-            msg = comm.client_broadcast_rx.recv() => {
+            msg = comm.controller_broadcast_rx.recv() => {
                 let message = msg.unwrap();
                 trace!(client_address = %peer, %message, "Received broadcast message from controller, sending to client");
                 _ = ws_stream.send(message).await;
@@ -222,7 +222,7 @@ async fn run_websocket(peer: SocketAddr, mut comm: WebsocketCommunicator, mut ws
                 let msg: ClientMessage = serde_json::from_str(message.to_text().unwrap()).unwrap();
                 let msg: InternalClientMessage = InternalClientMessage { client: peer, message: msg };
                 let json = serde_json::to_string(&msg).unwrap();
-                _ = comm.hook_tx.send(Message::Text(json.into())).await; }
+                _ = comm.controller_tx.send(Message::Text(json.into())).await; }
         }
     }
 }
@@ -273,9 +273,9 @@ async fn main() {
         clients_tx.insert(player_id, client_tx);
 
         let websocket_communicator = WebsocketCommunicator {
-            hook_tx: hook_tx.clone(),
-            client_rx,
-            client_broadcast_rx: client_broadcast_tx.subscribe()
+            controller_tx: hook_tx.clone(),
+            controller_rx: client_rx,
+            controller_broadcast_rx: client_broadcast_tx.subscribe()
         };
 
         tokio::spawn(accept_tcp_connection(peer, stream, websocket_communicator));
