@@ -71,7 +71,7 @@ fn broadcast_server_message(message: ServerMessage, tx: &broadcast::Sender<Messa
 
 async fn send_pregame_messages(game: &Game, comm: &mut ControllerCommunicator, lookup: &ControllerLookup) {
     debug!("Sending pregame messages to players");
-    let current_player = game.get_current_player();
+    let current_player = game.get_current_player().expect("Current player should exist pregame");
     let current_player_name = lookup.player_id_to_name[&current_player.id].clone();
     for player in game.players.iter().clone() {
         let player_name = lookup.player_id_to_name[&player.id].clone();
@@ -121,6 +121,13 @@ async fn run_controller(mut comm: ControllerCommunicator, lookup: ControllerLook
                     %hook.rank,
                     "Handling client hook request");
                 let current_player = game.get_current_player();
+                let current_player = match current_player {
+                    Some(player) => player,
+                    None => {
+                        error!(player_name = client_name, player_id = &client_player_id.0, "No current player");
+                        continue;
+                    }
+                };
                 if current_player.id != client_player_id {
                     // TODO Not your turn!
                     debug!(player_name = client_name, player_id = &client_player_id.0, "Player tried to go out of turn");
@@ -156,25 +163,27 @@ async fn run_controller(mut comm: ControllerCommunicator, lookup: ControllerLook
                 let hook_result_message = ServerMessage::HookAndResult(HookAndResult {hook_request: full_request, hook_result: result});
                 broadcast_server_message(hook_result_message, &comm.client_broadcast_tx);
 
-                let current_player = game.get_current_player();
-                let current_player_name = lookup.player_id_to_name[&current_player.id].clone();
+                if !game.is_finished {
+                    let current_player = game.get_current_player().expect("Current player should exist ingame");
+                    let current_player_name = lookup.player_id_to_name[&current_player.id].clone();
 
-                for player in game.players.iter().clone() {
-                    debug!(player_id = player.id.0, "Sending client state");
-                    let tx = &comm.clients_tx[&player.id];
-                    let state: PlayerState = PlayerState {
-                        hand: player.hand.clone(),
-                        completed_books: player.completed_books.clone(),
-                    };
+                    for player in game.players.iter().clone() {
+                        debug!(player_id = player.id.0, "Sending client state");
+                        let tx = &comm.clients_tx[&player.id];
+                        let state: PlayerState = PlayerState {
+                            hand: player.hand.clone(),
+                            completed_books: player.completed_books.clone(),
+                        };
 
-                    let msg = ServerMessage::PlayerState(state);
-                    send_server_message(msg, tx).await;
+                        let msg = ServerMessage::PlayerState(state);
+                        send_server_message(msg, tx).await;
 
-                    let msg = match player.id == current_player.id {
-                        true => ServerMessage::PlayerTurn(PlayerTurnValue::YourTurn),
-                        false => ServerMessage::PlayerTurn(PlayerTurnValue::OtherTurn(current_player_name.clone())),
-                    };
-                    send_server_message(msg, tx).await;
+                        let msg = match player.id == current_player.id {
+                            true => ServerMessage::PlayerTurn(PlayerTurnValue::YourTurn),
+                            false => ServerMessage::PlayerTurn(PlayerTurnValue::OtherTurn(current_player_name.clone())),
+                        };
+                        send_server_message(msg, tx).await;
+                    }
                 }
             }
         }
@@ -186,6 +195,7 @@ async fn run_controller(mut comm: ControllerCommunicator, lookup: ControllerLook
             let losers = result.losers.into_iter().map(|p| lookup.player_id_to_name[&p.id].clone()).collect();
             let pond_game_result = GameResult { winners, losers };
             let msg = ServerMessage::GameResult(pond_game_result);
+            debug!(message = ?msg, "Broadcasting game finished result");
             broadcast_server_message(msg, &comm.client_broadcast_tx);
             break;
         }

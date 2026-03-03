@@ -2,7 +2,7 @@ use go_fish::*;
 use rand::random_range;
 
 pub fn fish_random_rank_and_player(game: &Game) -> Hook {
-    let player = game.get_current_player();
+    let player = game.get_current_player().unwrap();
 
     let mut rank = player
         .hand

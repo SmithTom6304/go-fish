@@ -78,7 +78,7 @@ impl Display for Rank {
 /// A deck of [Cards](Card)
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Deck {
-    pub(crate) cards: Vec<Card>,
+    pub cards: Vec<Card>,
 }
 
 /// A collection of three or fewer [Cards](Card) of the same [Rank]
@@ -417,8 +417,21 @@ impl Game {
     }
 
     /// Get the current player
-    pub fn get_current_player(&self) -> &Player {
-        &self.players[self.player_turn]
+    pub fn get_current_player(&self) -> Option<&Player> {
+        if self.is_finished {
+            return None;
+        }
+        if self.players.is_empty() {
+            warn!("Current game has no current player, is not finished");
+            return None;
+        }
+
+        let player = self.players.get(self.player_turn);
+        if player.is_none() {
+            warn!(player_turn = self.player_turn, players = ?self.players, "player_turn index is out of bounds");
+        }
+
+        player
     }
 
     pub fn get_game_result(&self) -> Option<GameResult> {
