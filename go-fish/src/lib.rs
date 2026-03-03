@@ -390,6 +390,7 @@ impl Game {
                 }
             }
             HookResult::GoFish => {
+                // TODO Can draw last card of game, should become inactive
                 let draw = self.deck.draw();
                 if let Some(card) = draw {
                     fisher.add_book(card.into())

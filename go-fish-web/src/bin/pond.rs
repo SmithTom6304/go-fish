@@ -1,6 +1,6 @@
 use futures_util::{SinkExt, StreamExt};
 use go_fish::{Deck, Game, Hook, PlayerId};
-use go_fish_web::{ClientMessage, GameResult};
+use go_fish_web::{ClientHookRequest, ClientMessage, GameResult};
 use go_fish_web::{FullHookRequest, HookAndResult, ServerMessage};
 use go_fish_web::{PlayerState, PlayerTurnValue};
 use serde::{Deserialize, Serialize};
@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast;
+use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{accept_async, tungstenite::{Error, Result}, WebSocketStream};
@@ -98,7 +99,88 @@ async fn send_pregame_messages(game: &Game, comm: &mut ControllerCommunicator, l
     debug!("Sent pregame messages to players");
 }
 
+async fn handle_client_hook_message(hook: ClientHookRequest,
+                                    game: &mut Game,
+                                    client_name: String,
+                                    client_player_id: PlayerId,
+                                    comm: &mut ControllerCommunicator,
+                                    lookup: &ControllerLookup) {
+    debug!(player_name = client_name,
+                    player_id = &client_player_id.0,
+                    hook.target_name,
+                    %hook.rank,
+                    "Handling client hook request");
+    let current_player = game.get_current_player();
+    let current_player = match current_player {
+        Some(player) => player,
+        None => {
+            error!(player_name = client_name, player_id = &client_player_id.0, "No current player");
+            return;
+        }
+    };
+    if current_player.id != client_player_id {
+        // TODO Not your turn!
+        debug!(player_name = client_name, player_id = &client_player_id.0, "Player tried to go out of turn");
+        return;
+    };
+    let target_name = hook.target_name;
+    let target_player_id = lookup.name_to_player_id[&target_name];
+    if current_player.id == target_player_id {
+        // TODO Cannot target yourself!
+        debug!(player_name = client_name, player_id = &client_player_id.0, "Player tried to target themselves");
+        return;
+    }
+
+    if !current_player.hand.books.iter().any(|book| book.rank == hook.rank) {
+        // TODO Cannot ask for a card you do not have!
+        debug!(player_name = client_name,
+                        player_id = &client_player_id.0,
+                        rank = %hook.rank,
+                        "Player tried to ask for a card they do not already have");
+        return;
+    }
+
+    let rank = hook.rank;
+    let hook = Hook { target: target_player_id, rank: hook.rank };
+    let result = game.take_turn(hook).unwrap();
+
+    let full_request = FullHookRequest {
+        fisher_name: client_name,
+        target_name,
+        rank,
+    };
+
+    let hook_result_message = ServerMessage::HookAndResult(HookAndResult { hook_request: full_request, hook_result: result });
+    broadcast_server_message(hook_result_message, &comm.client_broadcast_tx);
+
+    if game.is_finished {
+        return;
+    }
+
+    let current_player = game.get_current_player().expect("Current player should exist ingame");
+    let current_player_name = lookup.player_id_to_name[&current_player.id].clone();
+
+    for player in game.players.iter().clone() {
+        debug!(player_id = player.id.0, "Sending client state");
+        let tx = &comm.clients_tx[&player.id];
+        let state: PlayerState = PlayerState {
+            hand: player.hand.clone(),
+            completed_books: player.completed_books.clone(),
+        };
+
+        let msg = ServerMessage::PlayerState(state);
+        send_server_message(msg, tx).await;
+
+        let msg = match player.id == current_player.id {
+            true => ServerMessage::PlayerTurn(PlayerTurnValue::YourTurn),
+            false => ServerMessage::PlayerTurn(PlayerTurnValue::OtherTurn(current_player_name.clone())),
+        };
+        send_server_message(msg, tx).await;
+    }
+}
+
 async fn run_controller(mut comm: ControllerCommunicator, lookup: ControllerLookup) {
+    debug!("Running controller handler");
     let mut deck = Deck::new();
     deck.shuffle();
     let mut game = Game::new(deck, 2);
@@ -106,7 +188,7 @@ async fn run_controller(mut comm: ControllerCommunicator, lookup: ControllerLook
     send_pregame_messages(&game, &mut comm, &lookup).await;
 
     while let Some(msg) = comm.hook_rx.recv().await {
-        debug!(%msg, "Received hook message");
+        debug!(%msg, "Received internal client message");
         let icm = msg.to_text().unwrap();
         let icm = serde_json::from_str::<InternalClientMessage>(icm).unwrap();
 
@@ -115,91 +197,30 @@ async fn run_controller(mut comm: ControllerCommunicator, lookup: ControllerLook
 
         match icm.message {
             ClientMessage::Hook(hook) => {
-                debug!(player_name = client_name,
-                    player_id = &client_player_id.0,
-                    hook.target_name,
-                    %hook.rank,
-                    "Handling client hook request");
-                let current_player = game.get_current_player();
-                let current_player = match current_player {
-                    Some(player) => player,
-                    None => {
-                        error!(player_name = client_name, player_id = &client_player_id.0, "No current player");
-                        continue;
-                    }
-                };
-                if current_player.id != client_player_id {
-                    // TODO Not your turn!
-                    debug!(player_name = client_name, player_id = &client_player_id.0, "Player tried to go out of turn");
-                    continue;
-                };
-                let target_name = hook.target_name;
-                let target_player_id = lookup.name_to_player_id[&target_name];
-                if current_player.id == target_player_id {
-                    // TODO Cannot target yourself!
-                    debug!(player_name = client_name, player_id = &client_player_id.0, "Player tried to target themselves");
-                    continue;
-                }
-
-                if !current_player.hand.books.iter().any(|book| book.rank == hook.rank) {
-                    // TODO Cannot ask for a card you do not have!
-                    debug!(player_name = client_name,
-                        player_id = &client_player_id.0,
-                        rank = %hook.rank,
-                        "Player tried to ask for a card they do not already have");
-                    continue;
-                }
-
-                let rank = hook.rank;
-                let hook = Hook { target: target_player_id, rank: hook.rank };
-                let result = game.take_turn(hook).unwrap();
-
-                let full_request = FullHookRequest {
-                    fisher_name: client_name,
-                    target_name,
-                    rank
-                };
-
-                let hook_result_message = ServerMessage::HookAndResult(HookAndResult {hook_request: full_request, hook_result: result});
-                broadcast_server_message(hook_result_message, &comm.client_broadcast_tx);
-
-                if !game.is_finished {
-                    let current_player = game.get_current_player().expect("Current player should exist ingame");
-                    let current_player_name = lookup.player_id_to_name[&current_player.id].clone();
-
-                    for player in game.players.iter().clone() {
-                        debug!(player_id = player.id.0, "Sending client state");
-                        let tx = &comm.clients_tx[&player.id];
-                        let state: PlayerState = PlayerState {
-                            hand: player.hand.clone(),
-                            completed_books: player.completed_books.clone(),
-                        };
-
-                        let msg = ServerMessage::PlayerState(state);
-                        send_server_message(msg, tx).await;
-
-                        let msg = match player.id == current_player.id {
-                            true => ServerMessage::PlayerTurn(PlayerTurnValue::YourTurn),
-                            false => ServerMessage::PlayerTurn(PlayerTurnValue::OtherTurn(current_player_name.clone())),
-                        };
-                        send_server_message(msg, tx).await;
-                    }
+                handle_client_hook_message(hook, &mut game, client_name, client_player_id, &mut comm, &lookup).await;
+                if game.is_finished {
+                    info!("Game finished!");
+                    let result = game.get_game_result().unwrap();
+                    let winners = result.winners.into_iter().map(|p| lookup.player_id_to_name[&p.id].clone()).collect();
+                    let losers = result.losers.into_iter().map(|p| lookup.player_id_to_name[&p.id].clone()).collect();
+                    let pond_game_result = GameResult { winners, losers };
+                    let msg = ServerMessage::GameResult(pond_game_result);
+                    debug!(message = ?msg, "Broadcasting game finished result");
+                    broadcast_server_message(msg, &comm.client_broadcast_tx);
+                    break;
                 }
             }
-        }
-
-        if game.is_finished {
-            info!("Game finished!");
-            let result = game.get_game_result().unwrap();
-            let winners = result.winners.into_iter().map(|p| lookup.player_id_to_name[&p.id].clone()).collect();
-            let losers = result.losers.into_iter().map(|p| lookup.player_id_to_name[&p.id].clone()).collect();
-            let pond_game_result = GameResult { winners, losers };
-            let msg = ServerMessage::GameResult(pond_game_result);
-            debug!(message = ?msg, "Broadcasting game finished result");
-            broadcast_server_message(msg, &comm.client_broadcast_tx);
-            break;
+            ClientMessage::Disconnect => {
+                debug!("Sending Close message to all clients");
+                for tx in &comm.clients_tx {
+                    let message = Message::Close(None);
+                    _ = tx.1.send(message).await;
+                }
+                continue;
+            }
         }
     }
+    debug!("Closing controller handler");
 }
 
 async fn run_websocket(peer: SocketAddr, mut comm: WebsocketCommunicator, mut ws_stream: WebSocketStream<TcpStream>) {
@@ -207,24 +228,73 @@ async fn run_websocket(peer: SocketAddr, mut comm: WebsocketCommunicator, mut ws
     loop {
         tokio::select! {
             msg = comm.controller_rx.recv() => {
-                let message = msg.unwrap();
+                let message = match msg {
+                    Some(msg) => msg,
+                    None => {
+                        debug!(client_address = %peer, "Controller has closed the internal connection, closing websocket");
+                        break;
+                    },
+                };
                 trace!(client_address = %peer, %message, "Received message from controller, sending to client");
                 _ = ws_stream.send(message).await;
             },
             msg = comm.controller_broadcast_rx.recv() => {
-                let message = msg.unwrap();
+                let message = match msg {
+                    Ok(msg) => msg,
+                    Err(err) => {
+                        match err {
+                            RecvError::Closed => {
+                                debug!(client_address = %peer, "Controller has closed the internal broadcast connection, closing websocket");
+                                break;
+                            },
+                            RecvError::Lagged(_) => {
+                                error!(client_address = %peer, error = %err, "Error receiving internal broadcast message from controller");
+                                continue;
+                            }
+                        }
+                    },
+                };
                 trace!(client_address = %peer, %message, "Received broadcast message from controller, sending to client");
                 _ = ws_stream.send(message).await;
             },
             msg = ws_stream.next() => {
-                let message = msg.unwrap().unwrap();
+                debug!(client_address = %peer, message = ?msg, "Received message from websocket");
+                let message = match msg {
+                    Some(Ok(msg)) => msg,
+                    Some(Err(err)) => {
+                        error!(client_address = %peer, error = %err, "Error receiving message from client");
+                        continue;
+                    },
+                    None => {
+                        debug!(client_address = %peer, "Client has force closed the websocket connection");
+                        // let msg: ClientMessage = ClientMessage::Disconnect;
+                        // let msg: InternalClientMessage = InternalClientMessage { client: peer, message: msg };
+                        // let json = serde_json::to_string(&msg).unwrap();
+                        // _ = comm.controller_tx.send(Message::Text(json.into())).await;
+                        break;
+                    }
+                };
                 trace!(client_address = %peer, %message, "Received message from client, sending to controller");
-                let msg: ClientMessage = serde_json::from_str(message.to_text().unwrap()).unwrap();
-                let msg: InternalClientMessage = InternalClientMessage { client: peer, message: msg };
+                let message = match message {
+                    Message::Close(_close_frame) => {
+                        debug!(client_address = %peer, "Client has closed the websocket connection");
+                        let msg: ClientMessage = ClientMessage::Disconnect;
+                        let msg: InternalClientMessage = InternalClientMessage { client: peer, message: msg };
+                        let json = serde_json::to_string(&msg).unwrap();
+                        _ = comm.controller_tx.send(Message::Text(json.into())).await;
+                        continue;
+                    },
+                    Message::Text(text) => {
+                        serde_json::from_str(&text).unwrap()
+                    },
+                    _ => todo!()
+                };
+                let msg: InternalClientMessage = InternalClientMessage { client: peer, message };
                 let json = serde_json::to_string(&msg).unwrap();
                 _ = comm.controller_tx.send(Message::Text(json.into())).await; }
         }
     }
+    debug!(client_address = %peer, "Closing websocket handler");
 }
 
 fn init_logging() {
@@ -296,6 +366,8 @@ async fn main() {
         name_to_player_id,
         player_id_to_name
     };
+
+    drop(hook_tx);
 
     info!(max_clients, "Max clients connected. Starting game.");
     _ = tokio::spawn(run_controller(controller_communicator, lookup)).await;

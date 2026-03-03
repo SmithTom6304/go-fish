@@ -5,7 +5,8 @@ use serde::Serialize;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum ClientMessage {
-    Hook(ClientHookRequest)
+    Hook(ClientHookRequest),
+    Disconnect
 }
 
 #[derive(Debug, Serialize, Deserialize)]
