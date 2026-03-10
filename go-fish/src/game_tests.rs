@@ -161,6 +161,55 @@ fn new_player_has_empty_hand_when_it_is_about_to_be_their_turn_then_draws() {
     assert_eq!(game.players.get(1).unwrap().hand.books.len(), 1); // Importantly, Player 2 has picked up a card now that it is their turn
 }
 
+#[test]
+fn final_player_completes_final_book_by_drawing_then_game_is_finished() {
+    let player_1 = Player {
+        id: PlayerId(1),
+        completed_books: vec![CompleteBook {
+            rank: Rank::Ace,
+            cards: [
+                Card { suit: Suit::Clubs, rank: Rank::Ace },
+                Card { suit: Suit::Diamonds, rank: Rank::Ace },
+                Card { suit: Suit::Hearts, rank: Rank::Ace },
+                Card { suit: Suit::Spades, rank: Rank::Ace }
+            ]
+        }],
+        hand: Hand { books: vec![] },
+    };
+    let player_2 = Player {
+        id: PlayerId(2),
+        completed_books: vec![],
+        hand: Hand {
+            books: vec![IncompleteBook {
+                rank: Rank::Two,
+                cards: vec![
+                    Card { suit: Suit::Clubs, rank: Rank::Two },
+                    Card { suit: Suit::Diamonds, rank: Rank::Two },
+                    Card { suit: Suit::Hearts, rank: Rank::Two },
+                ],
+            }]
+        },
+    };
+    let deck = Deck { cards: vec![Card { suit: Suit::Spades, rank: Rank::Two }] };
+
+    let mut game = Game {
+        deck,
+        players: vec![player_1, player_2],
+        inactive_players: vec![],
+        player_turn: 1,
+        is_finished: false,
+    };
+
+    let hook = Hook {
+        target: PlayerId(1),
+        rank: Rank::Two,
+    };
+
+    game.take_turn(hook).expect("Game state should be valid");
+
+    assert!(game.is_finished);
+}
+
 #[cfg(test)]
 mod deck_tests {
     use crate::{Card, Deck};

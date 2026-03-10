@@ -390,7 +390,6 @@ impl Game {
                 }
             }
             HookResult::GoFish => {
-                // TODO Can draw last card of game, should become inactive
                 let draw = self.deck.draw();
                 if let Some(card) = draw {
                     fisher.add_book(card.into())
@@ -515,6 +514,16 @@ impl Game {
             }
 
             new_turn = (new_turn + 1) % self.players.len();
+        }
+
+        if self.players.len() == 1 {
+            let player = self.players.remove(0);
+            if !player.hand.books.is_empty() {
+                panic!("Shouldn't get here I don't think")
+            }
+            let player = InactivePlayer { id: player.id, completed_books: player.completed_books };
+            self.inactive_players.push(player);
+            return;
         }
 
         self.player_turn = new_turn;
