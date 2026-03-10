@@ -6,6 +6,7 @@ use serde::Serialize;
 #[derive(Debug, Serialize, Deserialize)]
 pub enum ClientMessage {
     Hook(ClientHookRequest),
+    PlayerNameChangeRequest(String),
     Disconnect
 }
 

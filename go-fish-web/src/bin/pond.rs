@@ -1,3 +1,4 @@
+use anyhow::anyhow;
 use futures_util::{SinkExt, StreamExt};
 use go_fish::{Deck, Game, Hook, PlayerId};
 use go_fish_web::{ClientHookRequest, ClientMessage, GameResult};
@@ -12,7 +13,7 @@ use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{accept_async, tungstenite::{Error, Result}, WebSocketStream};
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, info, trace, warn};
 use tracing_subscriber::filter::EnvFilter;
 use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -179,7 +180,65 @@ async fn handle_client_hook_message(hook: ClientHookRequest,
     }
 }
 
-async fn run_controller(mut comm: ControllerCommunicator, lookup: ControllerLookup) {
+async fn handle_player_name_change_request(client: &SocketAddr, name_request: String, comm: &mut ControllerCommunicator, lookup: &mut ControllerLookup) {
+    let existing_port_using_name = lookup.port_to_name.iter()
+        .find(|(_, name)| *name == &name_request)
+        .map(|(port, _)| port);
+    if let Some(existing_port_using_name) = existing_port_using_name {
+        debug!(player_name = name_request, existing_port_using_name, "Player name already in use");
+        return;
+    }
+
+    let old_name = lookup.port_to_name.get(&client.port());
+    let old_name = match old_name {
+        Some(old_name) => old_name.clone(),
+        None => {
+            warn!("Client does not exist in client to name lookup");
+            return;
+        }
+    };
+
+    update_name_lookups(client, old_name.clone(), name_request.clone(), lookup).unwrap();
+    debug!(old_name, name_request, %client, "Successfully updated name lookups for client");
+    let msg = ServerMessage::PlayerIdentity(name_request.clone());
+    let tx = &comm.clients_tx[&lookup.name_to_player_id[&name_request]];
+    send_server_message(msg, tx).await;
+}
+
+fn update_name_lookups(client: &SocketAddr, old_name: String, new_name: String, lookup: &mut ControllerLookup) -> Result<(), anyhow::Error> {
+    debug!(old_name, new_name, %client, "Updating name lookups for client");
+
+    // Port to name
+    if let Some(old_name) = lookup.port_to_name.get_mut(&client.port()) {
+        *old_name = new_name.clone();
+    } else {
+        error!(%client, "Could not find client in port to name lookup");
+        return Err(anyhow!("Could not find client in port to name lookup"));
+    }
+
+    // Name to player id
+    let player_id = lookup.name_to_player_id.remove(&old_name);
+    let player_id = match player_id {
+        None => {
+            error!(old_name, "Could not find old name in name to player id lookup");
+            return Err(anyhow!("Could not find old name in name to player id lookup"))
+        },
+        Some(player_id) => player_id
+    };
+    lookup.name_to_player_id.insert(new_name.clone(), player_id);
+
+    // Player id to name
+    if let Some(old_name) = lookup.player_id_to_name.get_mut(&player_id) {
+        *old_name = new_name;
+    } else {
+        error!(%client, "Could not find player id in player id to name lookup");
+        return Err(anyhow!("Could not find player id in player id to name lookup"));
+    }
+
+    Ok(())
+}
+
+async fn run_controller(mut comm: ControllerCommunicator, mut lookup: ControllerLookup) {
     debug!("Running controller handler");
     let mut deck = Deck::new();
     deck.shuffle();
@@ -209,6 +268,10 @@ async fn run_controller(mut comm: ControllerCommunicator, lookup: ControllerLook
                     broadcast_server_message(msg, &comm.client_broadcast_tx);
                     break;
                 }
+            },
+            ClientMessage::PlayerNameChangeRequest(name_request) => {
+                debug!(player_name = client_name, new_name = name_request, "Handling player name change request");
+                handle_player_name_change_request(&icm.client, name_request, &mut comm, &mut lookup).await;
             }
             ClientMessage::Disconnect => {
                 debug!("Sending Close message to all clients");
