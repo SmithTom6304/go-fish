@@ -1,44 +1,65 @@
-use std::time::Duration;
+use clap::CommandFactory;
+use clap::Parser;
+use clap::Subcommand;
 use futures_util::{SinkExt, StreamExt};
 use go_fish::{HookResult, Rank};
 use go_fish_web::GameResult;
 use go_fish_web::{ClientHookRequest, ClientMessage, HookAndResult, PlayerState, PlayerTurnValue};
 use std::io::stdin;
+use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
-use tokio_util::sync::CancellationToken;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::MaybeTlsStream;
 use tokio_tungstenite::WebSocketStream;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info};
 use tracing_subscriber::filter::EnvFilter;
 use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
-#[derive(Debug)]
-enum IoMessage {
-    ServerMessage(go_fish_web::ServerMessage),
-    Close,
+#[derive(Parser, Debug)]
+#[command(long_about = None, name = "game")]
+struct GameArgs {
+    #[command(subcommand)]
+    command: GameCommand,
 }
 
-fn parse_client_message_from_string(s: &str) -> anyhow::Result<ClientMessage> {
-    debug!(value = s, "Parsing client request");
-    let parts = s.split(' ').map(|part| part.trim().to_lowercase()).collect::<Vec<String>>();
-    debug!(value = ?parts, "Parsed client request");
-    if parts.len() == 1 && parts[0] == "exit" {
-        debug!("Parsed disconnect message");
-        return Ok(ClientMessage::Disconnect)
-    }
+#[derive(Debug, Subcommand)]
+enum GameCommand {
+    /// Try fish a card from a player
+    Hook {
+        /// The name of the player to fish from
+        name: String,
+        /// The rank of the card to fish. You must have this in your hand
+        rank: String,
+    },
+    /// Change your name
+    Name {
+        new_name: String
+    },
+    /// Exit the game
+    Exit,
+}
 
-    if parts.len() != 2 {
-        return Err(anyhow::anyhow!("Invalid hook request"));
+impl TryFrom<GameCommand> for ClientMessage {
+    type Error = anyhow::Error;
+    fn try_from(command: GameCommand) -> Result<ClientMessage, Self::Error> {
+        let message = match command {
+            GameCommand::Hook { name, rank } => {
+                let rank = try_parse_rank_from_string(&rank)?;
+                ClientMessage::Hook(ClientHookRequest { target_name: name, rank })
+            }
+            GameCommand::Name { new_name } => ClientMessage::PlayerNameChangeRequest(new_name),
+            GameCommand::Exit => ClientMessage::Disconnect
+        };
+        Ok(message)
     }
+}
 
-    let target_name = parts[0].clone();
-    let rank = parts[1].clone();
-    debug!(target_name, rank, "Parsed hook message");
-    let rank = match rank.as_str() {
+fn try_parse_rank_from_string(rank: &str) -> Result<Rank, anyhow::Error> {
+    let rank = match rank {
         "ace" => Rank::Ace,
         "king" => Rank::King,
         "queen" => Rank::Queen,
@@ -54,8 +75,13 @@ fn parse_client_message_from_string(s: &str) -> anyhow::Result<ClientMessage> {
         "two" => Rank::Two,
         _ => return Err(anyhow::anyhow!("Invalid hook request rank")),
     };
+    Ok(rank)
+}
 
-    Ok(ClientMessage::Hook(ClientHookRequest { target_name: target_name.to_string(), rank }))
+#[derive(Debug)]
+enum IoMessage {
+    ServerMessage(go_fish_web::ServerMessage),
+    Close,
 }
 
 fn handle_server_message(message: go_fish_web::ServerMessage) -> anyhow::Result<()> {
@@ -120,22 +146,28 @@ fn handle_game_result(result: GameResult) {
     println!("Winners: {}", result.winners.join(", "));
 }
 
-fn parse_user_input(input: String) -> Result<ClientMessage, anyhow::Error> {
-    debug!(input, "Handling user input");
-    let req = parse_client_message_from_string(&input);
-    match req {
-        Ok(req) => Ok(req),
-        Err(err) => Err(anyhow::anyhow!(err))
-    }
-}
-
-fn run_user_input(input_tx: mpsc::Sender<String>) {
+fn run_user_input(input_tx: mpsc::Sender<GameCommand>) {
     debug!("Running user input handler");
+    let mut args_to_display = GameArgs::command()
+        .override_usage(None)
+        .about(None);
+    _ = args_to_display.print_help();
     loop {
         let mut s = String::new();
         _ = stdin().read_line(&mut s);
-        debug!(value = s, "Received user input");
-        input_tx.blocking_send(s).unwrap()
+        s = format! {"game {}", s};
+        let split = s.split(' ').map(|part| part.trim().to_lowercase());
+        let game_args = GameArgs::try_parse_from(split);
+
+        match game_args {
+            Ok(args) => {
+                debug!(value = ?args, "Received user input");
+                input_tx.blocking_send(args.command).unwrap()
+            },
+            Err(err) => {
+                error!(error = %err, "Error parsing game args");
+            }
+        }
     }
 }
 
@@ -165,7 +197,7 @@ async fn run_output(mut io_rx: mpsc::Receiver<IoMessage>, cancel: CancellationTo
 }
 
 async fn run_websocket(mut ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
-                       mut user_input_rx: mpsc::Receiver<String>,
+                       mut user_input_rx: mpsc::Receiver<GameCommand>,
                        io_tx: mpsc::Sender<IoMessage>,
                        cancel: CancellationToken) {
     debug!("Running websocket handler");
@@ -202,8 +234,8 @@ async fn run_websocket(mut ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
             },
             msg = user_input_rx.recv() => {
                 let msg = msg.expect("user input connection should never close");
-                debug!(message = %msg, "Received user input message");
-                let message = parse_user_input(msg);
+                debug!(message = ?msg, "Received user input message");
+                let message = ClientMessage::try_from(msg);
                 match message {
                     Ok(message) => {
                         let json = serde_json::to_string(&message).unwrap();
@@ -231,7 +263,7 @@ fn init_logging() {
 async fn run() {
     let server_address = "ws://localhost:9001";
     let (socket, _) = connect_async(server_address).await.unwrap();
-    let(user_input_tx, user_input_rx) = mpsc::channel::<String>(10);
+    let (user_input_tx, user_input_rx) = mpsc::channel::<GameCommand>(10);
     let (internal_tx, internal_rx) = mpsc::channel::<IoMessage>(10);
     info!(server_address, "Connected to server");
 
