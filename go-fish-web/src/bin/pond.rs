@@ -45,7 +45,7 @@ struct ControllerCommunicator {
 }
 
 struct ControllerLookup {
-    pub port_to_name: HashMap<u16, String>,
+    pub client_address_to_name: HashMap<SocketAddr, String>,
     pub name_to_player_id: HashMap<String, PlayerId>,
     pub player_id_to_name: HashMap<PlayerId, String>,
 }
@@ -188,15 +188,15 @@ async fn handle_client_hook_message(hook: ClientHookRequest,
 }
 
 async fn handle_player_name_change_request(client: &SocketAddr, name_request: String, comm: &mut ControllerCommunicator, lookup: &mut ControllerLookup) {
-    let existing_port_using_name = lookup.port_to_name.iter()
+    let existing_client_using_name = lookup.client_address_to_name.iter()
         .find(|(_, name)| *name == &name_request)
-        .map(|(port, _)| port);
-    if let Some(existing_port_using_name) = existing_port_using_name {
-        debug!(player_name = name_request, existing_port_using_name, "Player name already in use");
+        .map(|(address, _)| address);
+    if let Some(existing_port_using_name) = existing_client_using_name {
+        debug!(player_name = name_request, %existing_port_using_name, "Player name already in use");
         return;
     }
 
-    let old_name = lookup.port_to_name.get(&client.port());
+    let old_name = lookup.client_address_to_name.get(&client);
     let old_name = match old_name {
         Some(old_name) => old_name.clone(),
         None => {
@@ -215,8 +215,8 @@ async fn handle_player_name_change_request(client: &SocketAddr, name_request: St
 fn update_name_lookups(client: &SocketAddr, old_name: String, new_name: String, lookup: &mut ControllerLookup) -> Result<(), anyhow::Error> {
     debug!(old_name, new_name, %client, "Updating name lookups for client");
 
-    // Port to name
-    if let Some(old_name) = lookup.port_to_name.get_mut(&client.port()) {
+    // Client address to name
+    if let Some(old_name) = lookup.client_address_to_name.get_mut(&client) {
         *old_name = new_name.clone();
     } else {
         error!(%client, "Could not find client in port to name lookup");
@@ -258,7 +258,7 @@ async fn run_controller(mut comm: ControllerCommunicator, mut lookup: Controller
         let icm = msg.to_text().unwrap();
         let icm = serde_json::from_str::<InternalClientMessage>(icm).unwrap();
 
-        let client_name = lookup.port_to_name[&icm.client.port()].clone();
+        let client_name = lookup.client_address_to_name[&icm.client].clone();
         let client_player_id = lookup.name_to_player_id[&client_name];
 
         match icm.message {
@@ -388,7 +388,7 @@ async fn main() {
     let (client_broadcast_tx, _) = broadcast::channel::<Message>(10);
 
     let mut names = vec!["alpha", "bravo"];
-    let mut port_to_name: HashMap<u16, String> = HashMap::new();
+    let mut client_address_to_name: HashMap<SocketAddr, String> = HashMap::new();
     let mut name_to_player_id: HashMap<String, PlayerId> = HashMap::new();
     let mut player_id_to_name: HashMap<PlayerId, String> = HashMap::new();
     let mut pcount = 0;
@@ -405,7 +405,7 @@ async fn main() {
         pcount += 1;
         debug!(client_address = %peer, player_name, player_id = player_id.0, "New player mapped to client");
 
-        port_to_name.insert(peer.port(), player_name.to_string());
+        client_address_to_name.insert(peer, player_name.to_string());
         name_to_player_id.insert(player_name.to_string(), player_id);
         player_id_to_name.insert(player_id, player_name.to_string());
 
@@ -432,7 +432,7 @@ async fn main() {
     };
 
     let lookup = ControllerLookup {
-        port_to_name,
+        client_address_to_name,
         name_to_player_id,
         player_id_to_name
     };
