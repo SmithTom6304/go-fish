@@ -1,6 +1,7 @@
 use anyhow::anyhow;
 use futures_util::{SinkExt, StreamExt};
 use go_fish::{Deck, Game, Hook, PlayerId};
+use go_fish_web::HookError::{CannotTargetYourself, NotYourTurn, UnknownPlayer, YouDoNotHaveRank};
 use go_fish_web::{ClientHookRequest, ClientMessage, GameResult};
 use go_fish_web::{FullHookRequest, HookAndResult, ServerMessage};
 use go_fish_web::{PlayerState, PlayerTurnValue};
@@ -119,25 +120,31 @@ async fn handle_client_hook_message(hook: ClientHookRequest,
             return;
         }
     };
+    let client_tx = comm.clients_tx.get(&client_player_id).unwrap();
     if current_player.id != client_player_id {
-        // TODO Not your turn!
-        debug!(player_name = client_name, player_id = &client_player_id.0, "Player tried to go out of turn");
+        let message = ServerMessage::HookError(NotYourTurn);
+        send_server_message(message, client_tx).await;
         return;
     };
     let target_name = hook.target_name;
-    let target_player_id = lookup.name_to_player_id[&target_name];
+    let target_player_id = lookup.name_to_player_id.get(&target_name);
+    let target_player_id = *match target_player_id {
+        Some(player_id) => player_id,
+        None => {
+            let message = ServerMessage::HookError(UnknownPlayer(target_name.clone()));
+            send_server_message(message, client_tx).await;
+            return;
+        }
+    };
     if current_player.id == target_player_id {
-        // TODO Cannot target yourself!
-        debug!(player_name = client_name, player_id = &client_player_id.0, "Player tried to target themselves");
+        let message = ServerMessage::HookError(CannotTargetYourself);
+        send_server_message(message, client_tx).await;
         return;
     }
 
     if !current_player.hand.books.iter().any(|book| book.rank == hook.rank) {
-        // TODO Cannot ask for a card you do not have!
-        debug!(player_name = client_name,
-                        player_id = &client_player_id.0,
-                        rank = %hook.rank,
-                        "Player tried to ask for a card they do not already have");
+        let message = ServerMessage::HookError(YouDoNotHaveRank(hook.rank));
+        send_server_message(message, client_tx).await;
         return;
     }
 

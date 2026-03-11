@@ -13,10 +13,19 @@ pub enum ClientMessage {
 #[derive(Debug, Serialize, Deserialize)]
 pub enum ServerMessage {
     HookAndResult(HookAndResult),
+    HookError(HookError),
     PlayerState(PlayerState),
     PlayerTurn(PlayerTurnValue),
     PlayerIdentity(String),
     GameResult(GameResult)
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum HookError {
+    NotYourTurn,
+    UnknownPlayer(String),
+    CannotTargetYourself,
+    YouDoNotHaveRank(Rank),
 }
 
 #[derive(Debug, Serialize, Deserialize)]

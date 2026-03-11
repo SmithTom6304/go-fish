@@ -3,8 +3,8 @@ use clap::Parser;
 use clap::Subcommand;
 use futures_util::{SinkExt, StreamExt};
 use go_fish::{HookResult, Rank};
-use go_fish_web::GameResult;
 use go_fish_web::{ClientHookRequest, ClientMessage, HookAndResult, PlayerState, PlayerTurnValue};
+use go_fish_web::{GameResult, HookError};
 use std::io::stdin;
 use std::time::Duration;
 use tokio::net::TcpStream;
@@ -89,6 +89,10 @@ fn handle_server_message(message: go_fish_web::ServerMessage) -> anyhow::Result<
         go_fish_web::ServerMessage::HookAndResult(hook_and_result) => {
             debug!(?hook_and_result, "Received hook and result");
             handle_hook_and_result(hook_and_result)
+        },
+        go_fish_web::ServerMessage::HookError(hook_error) => {
+            debug!(?hook_error, "Received hook error");
+            handle_hook_error(hook_error)
         }
         go_fish_web::ServerMessage::PlayerState(state) => {
             debug!(?state, "Received player state");
@@ -121,6 +125,17 @@ fn handle_hook_and_result(hook_and_result: HookAndResult) {
              hook_and_result.hook_request.rank,
              result
     );
+}
+
+fn handle_hook_error(hook_error: HookError) {
+    let message = match hook_error {
+        HookError::NotYourTurn => "it is not your turn".to_string(),
+        HookError::UnknownPlayer(player) => format!("unknown player {}", player),
+        HookError::CannotTargetYourself => "cannot target yourself".to_string(),
+        HookError::YouDoNotHaveRank(rank) => "you cannot fish for a rank you do not have".to_string(),
+    };
+
+    println!("Invalid hook - {}", message);
 }
 
 fn handle_player_state(player_state: PlayerState) {
