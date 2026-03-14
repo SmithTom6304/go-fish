@@ -2,5 +2,7 @@
 resolver = "3"
 members = [
     "go-fish",
-    "go-fish-web"
+    "go-fish-web",
+    "go-fish-cli-client",
+    "go-fish-game-server"
 ]

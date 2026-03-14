@@ -132,7 +132,7 @@ fn handle_hook_error(hook_error: HookError) {
         HookError::NotYourTurn => "it is not your turn".to_string(),
         HookError::UnknownPlayer(player) => format!("unknown player {}", player),
         HookError::CannotTargetYourself => "cannot target yourself".to_string(),
-        HookError::YouDoNotHaveRank(rank) => "you cannot fish for a rank you do not have".to_string(),
+        HookError::YouDoNotHaveRank(_) => "you cannot fish for a rank you do not have".to_string(),
     };
 
     println!("Invalid hook - {}", message);
@@ -141,7 +141,7 @@ fn handle_hook_error(hook_error: HookError) {
 fn handle_player_state(player_state: PlayerState) {
     println!("Completed books: {}", player_state.completed_books.iter().map(|b| b.rank.to_string()).collect::<Vec<_>>().join(", "));
     println!("Incomplete books: {}",
-        player_state.hand.books.iter().map(|b| format!("{} {}s", b.cards.len(), b.rank)).collect::<Vec<_>>().join(", ")
+             player_state.hand.books.iter().map(|b| format!("{} {}s", b.cards.len(), b.rank)).collect::<Vec<_>>().join(", ")
     );
 }
 
@@ -303,7 +303,7 @@ fn main() {
     runtime.block_on(async {
         run().await;
     });
-    
+
     info!("Closing fisher");
     runtime.shutdown_timeout(Duration::from_millis(500));
 }
