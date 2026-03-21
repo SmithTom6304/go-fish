@@ -123,7 +123,7 @@ async fn handle_client_hook_message(hook_request: ClientHookRequest,
         }
     };
 
-    if let Some(hook_error) = cannot_target_self_hook_guard(current_player.id, client_player_id) {
+    if let Some(hook_error) = cannot_target_self_hook_guard(current_player.id, target_player_id) {
         let message = ServerMessage::HookError(hook_error);
         _ = client_tx.send(message).await;
         return;
