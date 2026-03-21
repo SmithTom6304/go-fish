@@ -1,13 +1,17 @@
 use anyhow::anyhow;
+use clap::Parser;
 use futures_util::{SinkExt, StreamExt};
 use go_fish::{Deck, Game, Hand, Hook, Player, PlayerId, Rank};
-use go_fish_game_server::AddressedClientMessage;
+use go_fish_game_server::{AddressedClientMessage, Config};
 use go_fish_web::HookError::{CannotTargetYourself, NotYourTurn, YouDoNotHaveRank};
 use go_fish_web::{ClientHookRequest, ClientMessage, GameResult, HookError};
 use go_fish_web::{FullHookRequest, HookAndResult, ServerMessage};
 use go_fish_web::{PlayerState, PlayerTurnValue};
 use std::collections::HashMap;
+use std::fs;
 use std::net::SocketAddr;
+use std::path::Path;
+use std::path::PathBuf;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::Receiver;
@@ -411,24 +415,39 @@ fn init_logging() {
         .init();
 }
 
+fn load_config(path: &Path) -> Result<Config, anyhow::Error> {
+    if !path.exists() {
+        return Err(anyhow!("Config file '{}' does not exist", path.display()));
+    }
+    let config = fs::read_to_string(path)?;
+    let config = toml::from_str(&config)?;
+    Ok(config)
+}
+
 #[tokio::main]
 async fn main() {
     init_logging();
-    let address = "127.0.0.1:9001";
+    let args = dbg!(Args::parse());
+    let config = match load_config(&args.config) {
+        Ok(config) => config,
+        Err(err) => {
+            warn!(error = %err, "Error loading config. Using defaults");
+            Config::default()
+        }
+    };
 
-    info!(address, "Starting pond");
+    info!(?args, ?config, "Starting go-fish-game-server");
 
-    let listener = TcpListener::bind(&address).await.expect("Can't listen");
+    let listener = TcpListener::bind(&config.address).await.expect("Can't listen");
 
     let (client_message_tx, client_message_rx) = mpsc::channel::<AddressedClientMessage>(10);
     let mut clients_tx: HashMap<PlayerId, mpsc::Sender<ServerMessage>> = HashMap::new();
 
-    let mut names = vec!["alpha", "bravo"];
+    let mut names = vec!["alpha", "bravo", "charlie"];
     let mut client_address_to_name: HashMap<SocketAddr, String> = HashMap::new();
     let mut name_to_player_id: HashMap<String, PlayerId> = HashMap::new();
     let mut player_id_to_name: HashMap<PlayerId, String> = HashMap::new();
     let mut pcount = 0;
-    let max_clients = 2;
 
     while let Ok((stream, _)) = listener.accept().await {
         let peer = stream
@@ -455,7 +474,7 @@ async fn main() {
 
         tokio::spawn(accept_tcp_connection(peer, stream, websocket_communicator));
 
-        if clients_tx.len() == max_clients {
+        if clients_tx.len() == config.player_count {
             break;
         }
     }
@@ -473,6 +492,14 @@ async fn main() {
 
     drop(client_message_tx);
 
-    info!(max_clients, "Max clients connected. Starting game.");
+    info!(config.player_count, "Max clients connected. Starting game.");
     _ = tokio::spawn(run_controller(controller_communicator, lookup)).await;
+}
+
+/// go-fish game server
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {
+    #[arg(short, long, default_value = "config.toml")]
+    pub config: PathBuf,
 }
