@@ -84,7 +84,7 @@ enum IoMessage {
     Close,
 }
 
-fn handle_server_message(message: go_fish_web::ServerMessage) -> anyhow::Result<()> {
+fn handle_server_message(message: go_fish_web::ServerMessage) {
     match message {
         go_fish_web::ServerMessage::HookAndResult(hook_and_result) => {
             debug!(?hook_and_result, "Received hook and result");
@@ -109,9 +109,9 @@ fn handle_server_message(message: go_fish_web::ServerMessage) -> anyhow::Result<
         go_fish_web::ServerMessage::GameResult(game_result) => {
             debug!(?game_result, "Received game result");
             handle_game_result(game_result)
-        }
+        },
+        go_fish_web::ServerMessage::Disconnect => {}
     }
-    Ok(())
 }
 
 fn handle_hook_and_result(hook_and_result: HookAndResult) {
@@ -201,7 +201,7 @@ async fn run_output(mut io_rx: mpsc::Receiver<IoMessage>, cancel: CancellationTo
             },
             Some(IoMessage::ServerMessage(message)) => {
                 debug!(message = ?message, "io Received server message");
-                handle_server_message(message).unwrap();
+                handle_server_message(message);
             },
             Some(IoMessage::Close) => {
                 info!("Closing IO connection");
@@ -285,8 +285,8 @@ async fn run() {
     let cancel = CancellationToken::new();
 
     _ = tokio::task::spawn_blocking(|| {run_user_input(user_input_tx)});
-    _ = tokio::spawn(run_output(internal_rx, cancel.clone()));
-    _ = tokio::spawn(run_websocket(socket, user_input_rx, internal_tx, cancel.clone())).await;
+    _ = tokio::spawn(run_websocket(socket, user_input_rx, internal_tx, cancel.clone()));
+    _ = tokio::spawn(run_output(internal_rx, cancel.clone())).await;
 
     cancel.cancel();
 }

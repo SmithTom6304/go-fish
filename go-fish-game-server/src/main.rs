@@ -1,23 +1,24 @@
 use anyhow::anyhow;
 use futures_util::{SinkExt, StreamExt};
-use go_fish::{Deck, Game, Hook, PlayerId};
-use go_fish_web::HookError::{CannotTargetYourself, NotYourTurn, UnknownPlayer, YouDoNotHaveRank};
-use go_fish_web::{ClientHookRequest, ClientMessage, GameResult};
+use go_fish::{Deck, Game, Hand, Hook, Player, PlayerId, Rank};
+use go_fish_game_server::AddressedClientMessage;
+use go_fish_web::HookError::{CannotTargetYourself, NotYourTurn, YouDoNotHaveRank};
+use go_fish_web::{ClientHookRequest, ClientMessage, GameResult, HookError};
 use go_fish_web::{FullHookRequest, HookAndResult, ServerMessage};
 use go_fish_web::{PlayerState, PlayerTurnValue};
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::broadcast;
-use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc;
-use tokio_tungstenite::tungstenite::Message;
+use tokio::sync::mpsc::Receiver;
+use tokio::sync::mpsc::Sender;
 use tokio_tungstenite::{accept_async, tungstenite::{Error, Result}, WebSocketStream};
 use tracing::{debug, error, info, trace, warn};
 use tracing_subscriber::filter::EnvFilter;
+use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
+use tungstenite::Message;
 
 async fn accept_tcp_connection(peer: SocketAddr, stream: TcpStream, websocket_communicator: WebsocketCommunicator) {
     debug!(address = %peer, "Accepted tcp connection");
@@ -33,15 +34,16 @@ async fn handle_connection(peer: SocketAddr, stream: TcpStream, websocket_commun
     let ws_stream = accept_async(stream).await.expect("Failed to accept");
     debug!(address = %peer, "Accepted WebSocket connection");
 
-    run_websocket(peer, websocket_communicator, ws_stream).await;
+    let controller_rx = websocket_communicator.server_message_rx;
+    let controller_tx = websocket_communicator.client_message_tx.clone();
+    run_websocket(peer, ws_stream, controller_rx, controller_tx, handle_server_message, handle_websocket_message).await;
 
     Ok(())
 }
 
 struct ControllerCommunicator {
-    pub hook_rx: mpsc::Receiver<Message>,
-    pub clients_tx: HashMap<PlayerId, mpsc::Sender<Message>>,
-    pub client_broadcast_tx: broadcast::Sender<Message>,
+    pub client_message_rx: mpsc::Receiver<AddressedClientMessage>,
+    pub client_server_messages_tx: HashMap<PlayerId, mpsc::Sender<ServerMessage>>
 }
 
 struct ControllerLookup {
@@ -51,25 +53,8 @@ struct ControllerLookup {
 }
 
 struct WebsocketCommunicator {
-    pub controller_tx: mpsc::Sender<Message>,
-    pub controller_rx: mpsc::Receiver<Message>,
-    pub controller_broadcast_rx: broadcast::Receiver<Message>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct InternalClientMessage {
-    client: SocketAddr,
-    message: ClientMessage
-}
-
-async fn send_server_message(message: ServerMessage, tx: &mpsc::Sender<Message>) {
-    let json = serde_json::to_string(&message).unwrap();
-    _ = tx.send(Message::Text(json.into())).await;
-}
-
-fn broadcast_server_message(message: ServerMessage, tx: &broadcast::Sender<Message>) {
-    let json = serde_json::to_string(&message).unwrap();
-    _ = tx.send(Message::Text(json.into()));
+    pub client_message_tx: mpsc::Sender<AddressedClientMessage>,
+    pub server_message_rx: mpsc::Receiver<ServerMessage>,
 }
 
 async fn send_pregame_messages(game: &Game, comm: &mut ControllerCommunicator, lookup: &ControllerLookup) {
@@ -80,37 +65,38 @@ async fn send_pregame_messages(game: &Game, comm: &mut ControllerCommunicator, l
         let player_name = lookup.player_id_to_name[&player.id].clone();
         debug!(player_name, player_id = &player.id.0, "Sending pregame messages to player");
 
-        let tx = &comm.clients_tx[&player.id];
+        let tx = &comm.client_server_messages_tx[&player.id];
         let state: PlayerState = PlayerState {
             hand: player.hand.clone(),
             completed_books: player.completed_books.clone(),
         };
 
         let msg = ServerMessage::PlayerIdentity(player_name);
-        send_server_message(msg, tx).await;
+        _ = tx.send(msg).await;
 
         let msg = ServerMessage::PlayerState(state);
-        send_server_message(msg, tx).await;
+        _ = tx.send(msg).await;
 
         let msg = match player.id == current_player.id {
             true => ServerMessage::PlayerTurn(PlayerTurnValue::YourTurn),
             false => ServerMessage::PlayerTurn(PlayerTurnValue::OtherTurn(current_player_name.clone())),
         };
-        send_server_message(msg, tx).await;
+        _ = tx.send(msg).await;
     }
     debug!("Sent pregame messages to players");
 }
 
-async fn handle_client_hook_message(hook: ClientHookRequest,
+async fn handle_client_hook_message(hook_request: ClientHookRequest,
                                     game: &mut Game,
                                     client_name: String,
                                     client_player_id: PlayerId,
                                     comm: &mut ControllerCommunicator,
-                                    lookup: &ControllerLookup) {
+                                    lookup: &ControllerLookup)
+{
     debug!(player_name = client_name,
                     player_id = &client_player_id.0,
-                    hook.target_name,
-                    %hook.rank,
+                    hook_request.target_name,
+                    %hook_request.rank,
                     "Handling client hook request");
     let current_player = game.get_current_player();
     let current_player = match current_player {
@@ -120,46 +106,49 @@ async fn handle_client_hook_message(hook: ClientHookRequest,
             return;
         }
     };
-    let client_tx = comm.clients_tx.get(&client_player_id).unwrap();
-    if current_player.id != client_player_id {
-        let message = ServerMessage::HookError(NotYourTurn);
-        send_server_message(message, client_tx).await;
+    let client_tx = comm.client_server_messages_tx.get(&client_player_id).unwrap();
+
+    if let Some(hook_error) = not_your_turn_hook_guard(&client_player_id, &current_player.id) {
+        let message = ServerMessage::HookError(hook_error);
+        _ = client_tx.send(message).await;
         return;
-    };
-    let target_name = hook.target_name;
-    let target_player_id = lookup.name_to_player_id.get(&target_name);
-    let target_player_id = *match target_player_id {
-        Some(player_id) => player_id,
-        None => {
-            let message = ServerMessage::HookError(UnknownPlayer(target_name.clone()));
-            send_server_message(message, client_tx).await;
+    }
+
+    let target_player_id = match find_hook_target(&hook_request, &lookup.name_to_player_id) {
+        FindHookTargetResult::Found(target_player_id) => target_player_id,
+        FindHookTargetResult::UnknownPlayer(target_name) => {
+            let message = ServerMessage::HookError(go_fish_web::HookError::UnknownPlayer(target_name));
+            _ = client_tx.send(message).await;
             return;
         }
     };
-    if current_player.id == target_player_id {
-        let message = ServerMessage::HookError(CannotTargetYourself);
-        send_server_message(message, client_tx).await;
+
+    if let Some(hook_error) = cannot_target_self_hook_guard(current_player.id, client_player_id) {
+        let message = ServerMessage::HookError(hook_error);
+        _ = client_tx.send(message).await;
         return;
     }
 
-    if !current_player.hand.books.iter().any(|book| book.rank == hook.rank) {
-        let message = ServerMessage::HookError(YouDoNotHaveRank(hook.rank));
-        send_server_message(message, client_tx).await;
+    if let Some(hook_error) = do_not_have_rank_hook_guard(current_player.hand.clone(), hook_request.rank) {
+        let message = ServerMessage::HookError(hook_error);
+        _ = client_tx.send(message).await;
         return;
     }
 
-    let rank = hook.rank;
-    let hook = Hook { target: target_player_id, rank: hook.rank };
+    let rank = hook_request.rank;
+    let hook = Hook { target: target_player_id, rank: hook_request.rank };
     let result = game.take_turn(hook).unwrap();
 
     let full_request = FullHookRequest {
         fisher_name: client_name,
-        target_name,
+        target_name: hook_request.target_name,
         rank,
     };
 
     let hook_result_message = ServerMessage::HookAndResult(HookAndResult { hook_request: full_request, hook_result: result });
-    broadcast_server_message(hook_result_message, &comm.client_broadcast_tx);
+    for tx in comm.client_server_messages_tx.values() {
+        _ = tx.send(hook_result_message.clone()).await;
+    }
 
     if game.is_finished {
         return;
@@ -169,22 +158,28 @@ async fn handle_client_hook_message(hook: ClientHookRequest,
     let current_player_name = lookup.player_id_to_name[&current_player.id].clone();
 
     for player in game.players.iter().clone() {
-        debug!(player_id = player.id.0, "Sending client state");
-        let tx = &comm.clients_tx[&player.id];
-        let state: PlayerState = PlayerState {
-            hand: player.hand.clone(),
-            completed_books: player.completed_books.clone(),
-        };
-
-        let msg = ServerMessage::PlayerState(state);
-        send_server_message(msg, tx).await;
-
-        let msg = match player.id == current_player.id {
-            true => ServerMessage::PlayerTurn(PlayerTurnValue::YourTurn),
-            false => ServerMessage::PlayerTurn(PlayerTurnValue::OtherTurn(current_player_name.clone())),
-        };
-        send_server_message(msg, tx).await;
+        debug!(player_id = player.id.0, "Sending player state");
+        let tx = &comm.client_server_messages_tx[&player.id];
+        for msg in create_player_state_server_messages(player, current_player.id, &current_player_name) {
+            _ = tx.send(msg).await;
+        }
     }
+}
+
+fn create_player_state_server_messages(player: &Player, current_player_id: PlayerId, current_player_name: &str) -> [ServerMessage; 2] {
+    let state: PlayerState = PlayerState {
+        hand: player.hand.clone(),
+        completed_books: player.completed_books.clone(),
+    };
+
+    let state_msg = ServerMessage::PlayerState(state);
+
+    let turn_msg = match player.id == current_player_id {
+        true => ServerMessage::PlayerTurn(PlayerTurnValue::YourTurn),
+        false => ServerMessage::PlayerTurn(PlayerTurnValue::OtherTurn(current_player_name.to_string())),
+    };
+
+    [state_msg, turn_msg]
 }
 
 async fn handle_player_name_change_request(client: &SocketAddr, name_request: String, comm: &mut ControllerCommunicator, lookup: &mut ControllerLookup) {
@@ -196,7 +191,7 @@ async fn handle_player_name_change_request(client: &SocketAddr, name_request: St
         return;
     }
 
-    let old_name = lookup.client_address_to_name.get(&client);
+    let old_name = lookup.client_address_to_name.get(client);
     let old_name = match old_name {
         Some(old_name) => old_name.clone(),
         None => {
@@ -208,15 +203,15 @@ async fn handle_player_name_change_request(client: &SocketAddr, name_request: St
     update_name_lookups(client, old_name.clone(), name_request.clone(), lookup).unwrap();
     debug!(old_name, name_request, %client, "Successfully updated name lookups for client");
     let msg = ServerMessage::PlayerIdentity(name_request.clone());
-    let tx = &comm.clients_tx[&lookup.name_to_player_id[&name_request]];
-    send_server_message(msg, tx).await;
+    let tx = &comm.client_server_messages_tx[&lookup.name_to_player_id[&name_request]];
+    _ = tx.send(msg).await;
 }
 
 fn update_name_lookups(client: &SocketAddr, old_name: String, new_name: String, lookup: &mut ControllerLookup) -> Result<(), anyhow::Error> {
     debug!(old_name, new_name, %client, "Updating name lookups for client");
 
     // Client address to name
-    if let Some(old_name) = lookup.client_address_to_name.get_mut(&client) {
+    if let Some(old_name) = lookup.client_address_to_name.get_mut(client) {
         *old_name = new_name.clone();
     } else {
         error!(%client, "Could not find client in port to name lookup");
@@ -245,6 +240,64 @@ fn update_name_lookups(client: &SocketAddr, old_name: String, new_name: String, 
     Ok(())
 }
 
+fn handle_server_message(message: ServerMessage) -> Message {
+    match message {
+        ServerMessage::Disconnect => Message::Close(None),
+        _ => Message::Text(serde_json::to_string(&message).unwrap().into())
+    }
+}
+
+fn handle_websocket_message(message: Message) -> Result<ClientMessage, anyhow::Error> {
+    match message {
+        Message::Text(text) => Ok(serde_json::from_str(&text)?),
+        Message::Close(_) => Ok(ClientMessage::Disconnect),
+        _ => Err(anyhow!("Invalid message type")),
+    }
+}
+
+fn not_your_turn_hook_guard(client_player_id: &PlayerId,
+                            current_player_id: &PlayerId,
+) -> Option<HookError> {
+    match current_player_id.0 == client_player_id.0 {
+        true => None,
+        false => Some(NotYourTurn)
+    }
+}
+
+enum FindHookTargetResult {
+    Found(PlayerId),
+    UnknownPlayer(String),
+}
+
+fn find_hook_target(hook_request: &ClientHookRequest,
+                    name_id_map: &HashMap<String, PlayerId>,
+) -> FindHookTargetResult {
+    let target_name = hook_request.target_name.clone();
+    let target_player_id = name_id_map.get(&target_name);
+    match target_player_id {
+        Some(id) => FindHookTargetResult::Found(*id),
+        None => FindHookTargetResult::UnknownPlayer(target_name),
+    }
+}
+
+fn cannot_target_self_hook_guard(current_player_id: PlayerId,
+                                 target_player_id: PlayerId,
+) -> Option<HookError> {
+    match current_player_id.0 == target_player_id.0 {
+        true => Some(CannotTargetYourself),
+        false => None,
+    }
+}
+
+fn do_not_have_rank_hook_guard(current_player_hand: Hand,
+                               rank: Rank,
+) -> Option<HookError> {
+    match current_player_hand.books.iter().any(|book| book.rank == rank) {
+        true => None,
+        false => Some(YouDoNotHaveRank(rank))
+    }
+}
+
 async fn run_controller(mut comm: ControllerCommunicator, mut lookup: ControllerLookup) {
     debug!("Running controller handler");
     let mut deck = Deck::new();
@@ -253,15 +306,12 @@ async fn run_controller(mut comm: ControllerCommunicator, mut lookup: Controller
 
     send_pregame_messages(&game, &mut comm, &lookup).await;
 
-    while let Some(msg) = comm.hook_rx.recv().await {
-        debug!(%msg, "Received internal client message");
-        let icm = msg.to_text().unwrap();
-        let icm = serde_json::from_str::<InternalClientMessage>(icm).unwrap();
-
-        let client_name = lookup.client_address_to_name[&icm.client].clone();
+    while let Some(msg) = comm.client_message_rx.recv().await {
+        debug!(?msg, "Received internal client message");
+        let client_name = lookup.client_address_to_name[&msg.client].clone();
         let client_player_id = lookup.name_to_player_id[&client_name];
 
-        match icm.message {
+        match msg.client_message {
             ClientMessage::Hook(hook) => {
                 handle_client_hook_message(hook, &mut game, client_name, client_player_id, &mut comm, &lookup).await;
                 if game.is_finished {
@@ -272,19 +322,20 @@ async fn run_controller(mut comm: ControllerCommunicator, mut lookup: Controller
                     let pond_game_result = GameResult { winners, losers };
                     let msg = ServerMessage::GameResult(pond_game_result);
                     debug!(message = ?msg, "Broadcasting game finished result");
-                    broadcast_server_message(msg, &comm.client_broadcast_tx);
+                    for tx in comm.client_server_messages_tx.values() {
+                        _ = tx.send(msg.clone()).await;
+                    }
                     break;
                 }
             },
             ClientMessage::PlayerNameChangeRequest(name_request) => {
                 debug!(player_name = client_name, new_name = name_request, "Handling player name change request");
-                handle_player_name_change_request(&icm.client, name_request, &mut comm, &mut lookup).await;
+                handle_player_name_change_request(&msg.client, name_request, &mut comm, &mut lookup).await;
             }
             ClientMessage::Disconnect => {
                 debug!("Sending Close message to all clients");
-                for tx in &comm.clients_tx {
-                    let message = Message::Close(None);
-                    _ = tx.1.send(message).await;
+                for tx in &comm.client_server_messages_tx {
+                    _ = tx.1.send(ServerMessage::Disconnect).await;
                 }
                 continue;
             }
@@ -293,11 +344,20 @@ async fn run_controller(mut comm: ControllerCommunicator, mut lookup: Controller
     debug!("Closing controller handler");
 }
 
-async fn run_websocket(peer: SocketAddr, mut comm: WebsocketCommunicator, mut ws_stream: WebSocketStream<TcpStream>) {
+async fn run_websocket<F, G>(peer: SocketAddr,
+                             mut ws_stream: WebSocketStream<TcpStream>,
+                             mut controller_rx: Receiver<ServerMessage>,
+                             controller_tx: Sender<AddressedClientMessage>,
+                             handle_server_message: F,
+                             handle_websocket_message: G)
+where
+    F: Fn(ServerMessage) -> Message,
+    G: Fn(Message) -> Result<ClientMessage, anyhow::Error>,
+{
     debug!(client_address = %peer, "Running websocket handler");
     loop {
         tokio::select! {
-            msg = comm.controller_rx.recv() => {
+            msg = controller_rx.recv() => {
                 let message = match msg {
                     Some(msg) => msg,
                     None => {
@@ -305,27 +365,9 @@ async fn run_websocket(peer: SocketAddr, mut comm: WebsocketCommunicator, mut ws
                         break;
                     },
                 };
-                trace!(client_address = %peer, %message, "Received message from controller, sending to client");
-                _ = ws_stream.send(message).await;
-            },
-            msg = comm.controller_broadcast_rx.recv() => {
-                let message = match msg {
-                    Ok(msg) => msg,
-                    Err(err) => {
-                        match err {
-                            RecvError::Closed => {
-                                debug!(client_address = %peer, "Controller has closed the internal broadcast connection, closing websocket");
-                                break;
-                            },
-                            RecvError::Lagged(_) => {
-                                error!(client_address = %peer, error = %err, "Error receiving internal broadcast message from controller");
-                                continue;
-                            }
-                        }
-                    },
-                };
-                trace!(client_address = %peer, %message, "Received broadcast message from controller, sending to client");
-                _ = ws_stream.send(message).await;
+                trace!(client_address = %peer, ?message, "Received message from controller, sending to client");
+                let ws_message = handle_server_message(message);
+                _ = ws_stream.send(ws_message).await;
             },
             msg = ws_stream.next() => {
                 debug!(client_address = %peer, message = ?msg, "Received message from websocket");
@@ -337,40 +379,35 @@ async fn run_websocket(peer: SocketAddr, mut comm: WebsocketCommunicator, mut ws
                     },
                     None => {
                         debug!(client_address = %peer, "Client has force closed the websocket connection");
-                        // let msg: ClientMessage = ClientMessage::Disconnect;
-                        // let msg: InternalClientMessage = InternalClientMessage { client: peer, message: msg };
-                        // let json = serde_json::to_string(&msg).unwrap();
-                        // _ = comm.controller_tx.send(Message::Text(json.into())).await;
                         break;
                     }
                 };
-                trace!(client_address = %peer, %message, "Received message from client, sending to controller");
-                let message = match message {
-                    Message::Close(_close_frame) => {
-                        debug!(client_address = %peer, "Client has closed the websocket connection");
-                        let msg: ClientMessage = ClientMessage::Disconnect;
-                        let msg: InternalClientMessage = InternalClientMessage { client: peer, message: msg };
-                        let json = serde_json::to_string(&msg).unwrap();
-                        _ = comm.controller_tx.send(Message::Text(json.into())).await;
+                let client_message = handle_websocket_message(message);
+                let client_message = match client_message {
+                    Ok(client_message) => client_message,
+                    Err(err) => {
+                        error!(client_address = %peer, error = %err, "Error handling websocket message");
                         continue;
-                    },
-                    Message::Text(text) => {
-                        serde_json::from_str(&text).unwrap()
-                    },
-                    _ => todo!()
+                    }
                 };
-                let msg: InternalClientMessage = InternalClientMessage { client: peer, message };
-                let json = serde_json::to_string(&msg).unwrap();
-                _ = comm.controller_tx.send(Message::Text(json.into())).await; }
+                let addressed_client_message = AddressedClientMessage {
+                    client: peer,
+                    client_message
+                };
+                _ = controller_tx.send(addressed_client_message).await;
+            }
         }
     }
     debug!(client_address = %peer, "Closing websocket handler");
 }
 
 fn init_logging() {
+    let env_filter = EnvFilter::builder()
+        .with_default_directive(LevelFilter::INFO.into())
+        .from_env_lossy();
     tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer())
-        .with(EnvFilter::from_default_env())
+        .with(env_filter)
         .init();
 }
 
@@ -383,9 +420,8 @@ async fn main() {
 
     let listener = TcpListener::bind(&address).await.expect("Can't listen");
 
-    let (hook_tx, hook_rx) = mpsc::channel::<Message>(10);
-    let mut clients_tx: HashMap<PlayerId, mpsc::Sender<Message>> = HashMap::new();
-    let (client_broadcast_tx, _) = broadcast::channel::<Message>(10);
+    let (client_message_tx, client_message_rx) = mpsc::channel::<AddressedClientMessage>(10);
+    let mut clients_tx: HashMap<PlayerId, mpsc::Sender<ServerMessage>> = HashMap::new();
 
     let mut names = vec!["alpha", "bravo"];
     let mut client_address_to_name: HashMap<SocketAddr, String> = HashMap::new();
@@ -409,13 +445,12 @@ async fn main() {
         name_to_player_id.insert(player_name.to_string(), player_id);
         player_id_to_name.insert(player_id, player_name.to_string());
 
-        let (client_tx, client_rx) = mpsc::channel::<Message>(10);
-        clients_tx.insert(player_id, client_tx);
+        let (server_message_tx, server_message_rx) = mpsc::channel::<ServerMessage>(10);
+        clients_tx.insert(player_id, server_message_tx);
 
         let websocket_communicator = WebsocketCommunicator {
-            controller_tx: hook_tx.clone(),
-            controller_rx: client_rx,
-            controller_broadcast_rx: client_broadcast_tx.subscribe()
+            client_message_tx: client_message_tx.clone(),
+            server_message_rx
         };
 
         tokio::spawn(accept_tcp_connection(peer, stream, websocket_communicator));
@@ -426,9 +461,8 @@ async fn main() {
     }
 
     let controller_communicator = ControllerCommunicator {
-        hook_rx,
-        clients_tx,
-        client_broadcast_tx
+        client_message_rx,
+        client_server_messages_tx: clients_tx
     };
 
     let lookup = ControllerLookup {
@@ -437,7 +471,7 @@ async fn main() {
         player_id_to_name
     };
 
-    drop(hook_tx);
+    drop(client_message_tx);
 
     info!(max_clients, "Max clients connected. Starting game.");
     _ = tokio::spawn(run_controller(controller_communicator, lookup)).await;

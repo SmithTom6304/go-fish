@@ -10,17 +10,18 @@ pub enum ClientMessage {
     Disconnect
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum ServerMessage {
     HookAndResult(HookAndResult),
     HookError(HookError),
     PlayerState(PlayerState),
     PlayerTurn(PlayerTurnValue),
     PlayerIdentity(String),
-    GameResult(GameResult)
+    GameResult(GameResult),
+    Disconnect
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum HookError {
     NotYourTurn,
     UnknownPlayer(String),
@@ -28,38 +29,38 @@ pub enum HookError {
     YouDoNotHaveRank(Rank),
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum PlayerTurnValue {
     YourTurn,
     OtherTurn(String)
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ClientHookRequest {
     pub target_name: String,
     pub rank: Rank
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct FullHookRequest {
     pub fisher_name: String,
     pub target_name: String,
     pub rank: Rank,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct HookAndResult {
     pub hook_request: FullHookRequest,
     pub hook_result: HookResult
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PlayerState {
     pub hand: Hand,
     pub completed_books: Vec<CompleteBook>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct GameResult {
     pub winners: Vec<String>,
     pub losers: Vec<String>,
