@@ -5,6 +5,9 @@ edition = "2024"
 
 [dependencies]
 clap = { version = "4.6.0", features = ["derive"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+toml = "1.0.7+spec-1.1.0"
 futures-util = "0.3.32"
 tokio = "1.50.0"
 tokio-tungstenite = "0.28.0"
@@ -12,6 +15,5 @@ tokio-util = "0.7.18"
 tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
 anyhow = "1.0.102"
-serde_json = "1.0.149"
 go-fish = "0.1.2"
 go-fish-web = {path = "../go-fish-web"}

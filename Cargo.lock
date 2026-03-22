@@ -308,10 +308,12 @@ dependencies = [
  "futures-util",
  "go-fish 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "go-fish-web",
+ "serde",
  "serde_json",
  "tokio",
  "tokio-tungstenite",
  "tokio-util",
+ "toml",
  "tracing",
  "tracing-subscriber",
 ]

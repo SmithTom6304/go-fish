@@ -1,3 +1,5 @@
+use go_fish_cli_client::Config;
+use std::fs;
 use clap::CommandFactory;
 use clap::Parser;
 use clap::Subcommand;
@@ -6,7 +8,9 @@ use go_fish::{HookResult, Rank};
 use go_fish_web::{ClientHookRequest, ClientMessage, HookAndResult, PlayerState, PlayerTurnValue};
 use go_fish_web::{GameResult, HookError};
 use std::io::stdin;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
+use anyhow::anyhow;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio_tungstenite::connect_async;
@@ -14,7 +18,7 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::MaybeTlsStream;
 use tokio_tungstenite::WebSocketStream;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 use tracing_subscriber::filter::EnvFilter;
 use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -275,9 +279,9 @@ fn init_logging() {
         .init();
 }
 
-async fn run() {
-    let server_address = "ws://localhost:9001";
-    let (socket, _) = connect_async(server_address).await.unwrap();
+async fn run(config: &Config) {
+    let server_address = format!("ws://{}", config.server_address);
+    let (socket, _) = connect_async(&server_address).await.unwrap();
     let (user_input_tx, user_input_rx) = mpsc::channel::<GameCommand>(10);
     let (internal_tx, internal_rx) = mpsc::channel::<IoMessage>(10);
     info!(server_address, "Connected to server");
@@ -291,9 +295,28 @@ async fn run() {
     cancel.cancel();
 }
 
+fn load_config(path: &Path) -> tokio_tungstenite::tungstenite::Result<Config, anyhow::Error> {
+    if !path.exists() {
+        return Err(anyhow!("Config file '{}' does not exist", path.display()));
+    }
+    let config = fs::read_to_string(path)?;
+    let config = toml::from_str(&config)?;
+    Ok(config)
+}
+
 fn main() {
     init_logging();
-    info!("Starting fisher");
+
+    let args = dbg!(Args::parse());
+    let config = match load_config(&args.config) {
+        Ok(config) => config,
+        Err(err) => {
+            warn!(error = %err, "Error loading config. Using defaults");
+            Config::default()
+        }
+    };
+
+    info!(?args, ?config, "Starting go-fish-cli-client");
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -301,9 +324,16 @@ fn main() {
         .unwrap();
 
     runtime.block_on(async {
-        run().await;
+        run(&config).await;
     });
 
     info!("Closing fisher");
     runtime.shutdown_timeout(Duration::from_millis(500));
+}
+
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {
+    #[arg(short, long, default_value = "config.toml")]
+    pub config: PathBuf,
 }
