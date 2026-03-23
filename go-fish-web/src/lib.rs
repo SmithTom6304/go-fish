@@ -6,8 +6,14 @@ use serde::Serialize;
 #[derive(Debug, Serialize, Deserialize)]
 pub enum ClientMessage {
     Hook(ClientHookRequest),
-    PlayerNameChangeRequest(String),
+    RequestPlayerIdentity(PlayerIdentityRequest),
     Disconnect
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum PlayerIdentityRequest {
+    RequestedName(String),
+    RandomName
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -16,9 +22,21 @@ pub enum ServerMessage {
     HookError(HookError),
     PlayerState(PlayerState),
     PlayerTurn(PlayerTurnValue),
-    PlayerIdentity(String),
+    PlayerIdentity(PlayerIdentity),
     GameResult(GameResult),
     Disconnect
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub enum PlayerIdentity {
+    RequestedPlayerIdentity(String),
+    RandomPlayerIdentity(String, RandomPlayerIdentityReason)
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub enum RandomPlayerIdentityReason {
+    RandomIdentityRequested,
+    RequestedIdentityAlreadyInUse(String)
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

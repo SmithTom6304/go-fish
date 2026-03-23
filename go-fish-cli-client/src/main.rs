@@ -1,3 +1,4 @@
+use go_fish_web::{PlayerIdentity, RandomPlayerIdentityReason};
 use go_fish_cli_client::Config;
 use std::fs;
 use clap::CommandFactory;
@@ -5,7 +6,7 @@ use clap::Parser;
 use clap::Subcommand;
 use futures_util::{SinkExt, StreamExt};
 use go_fish::{HookResult, Rank};
-use go_fish_web::{ClientHookRequest, ClientMessage, HookAndResult, PlayerState, PlayerTurnValue};
+use go_fish_web::{ClientHookRequest, ClientMessage, HookAndResult, PlayerIdentityRequest, PlayerState, PlayerTurnValue};
 use go_fish_web::{GameResult, HookError};
 use std::io::stdin;
 use std::path::{Path, PathBuf};
@@ -55,7 +56,7 @@ impl TryFrom<GameCommand> for ClientMessage {
                 let rank = try_parse_rank_from_string(&rank)?;
                 ClientMessage::Hook(ClientHookRequest { target_name: name, rank })
             }
-            GameCommand::Name { new_name } => ClientMessage::PlayerNameChangeRequest(new_name),
+            GameCommand::Name { new_name } => ClientMessage::RequestPlayerIdentity(PlayerIdentityRequest::RequestedName(new_name)),
             GameCommand::Exit => ClientMessage::Disconnect
         };
         Ok(message)
@@ -63,7 +64,7 @@ impl TryFrom<GameCommand> for ClientMessage {
 }
 
 fn try_parse_rank_from_string(rank: &str) -> Result<Rank, anyhow::Error> {
-    let rank = match rank {
+    let rank = match rank.to_lowercase().as_str() {
         "ace" => Rank::Ace,
         "king" => Rank::King,
         "queen" => Rank::Queen,
@@ -156,8 +157,23 @@ fn handle_player_turn(player_turn: PlayerTurnValue) {
     }
 }
 
-fn handle_player_identity(name: String) {
-    println!("You are player {}", name);
+fn handle_player_identity(player_identity: PlayerIdentity) {
+    let (name, error): (String, Option<String>) = match player_identity {
+        PlayerIdentity::RandomPlayerIdentity(random_name, random_identity_reason) => {
+            let error = match random_identity_reason {
+                RandomPlayerIdentityReason::RequestedIdentityAlreadyInUse(requested_identity) => {
+                    Some(format!("Could not change name to {} - that name is already in use", requested_identity))
+                },
+                _ => None
+            };
+            (random_name, error)
+        },
+        PlayerIdentity::RequestedPlayerIdentity(name) => (name, None)
+    };
+    if let Some(error) = error {
+        println!("{}", error);
+    }
+    println!("You are now player {}", name);
 }
 
 fn handle_game_result(result: GameResult) {
@@ -175,7 +191,7 @@ fn run_user_input(input_tx: mpsc::Sender<GameCommand>) {
         let mut s = String::new();
         _ = stdin().read_line(&mut s);
         s = format! {"game {}", s};
-        let split = s.split(' ').map(|part| part.trim().to_lowercase());
+        let split = s.split(' ').map(|part| part.trim());
         let game_args = GameArgs::try_parse_from(split);
 
         match game_args {

@@ -2,9 +2,9 @@ use anyhow::anyhow;
 use clap::Parser;
 use futures_util::{SinkExt, StreamExt};
 use go_fish::{Deck, Game, Hand, Hook, Player, PlayerId, Rank};
-use go_fish_game_server::{AddressedClientMessage, Config};
+use go_fish_game_server::{AddressedClientMessage, Config, RandomNameGenerator};
 use go_fish_web::HookError::{CannotTargetYourself, NotYourTurn, YouDoNotHaveRank};
-use go_fish_web::{ClientHookRequest, ClientMessage, GameResult, HookError};
+use go_fish_web::{ClientHookRequest, ClientMessage, GameResult, HookError, PlayerIdentityRequest, RandomPlayerIdentityReason};
 use go_fish_web::{FullHookRequest, HookAndResult, ServerMessage};
 use go_fish_web::{PlayerState, PlayerTurnValue};
 use std::collections::HashMap;
@@ -23,6 +23,7 @@ use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tungstenite::Message;
+use go_fish_web::PlayerIdentity::{RandomPlayerIdentity, RequestedPlayerIdentity};
 
 async fn accept_tcp_connection(peer: SocketAddr, stream: TcpStream, websocket_communicator: WebsocketCommunicator) {
     debug!(address = %peer, "Accepted tcp connection");
@@ -75,7 +76,7 @@ async fn send_pregame_messages(game: &Game, comm: &mut ControllerCommunicator, l
             completed_books: player.completed_books.clone(),
         };
 
-        let msg = ServerMessage::PlayerIdentity(player_name);
+        let msg = ServerMessage::PlayerIdentity(RandomPlayerIdentity(player_name, RandomPlayerIdentityReason::RandomIdentityRequested));
         _ = tx.send(msg).await;
 
         let msg = ServerMessage::PlayerState(state);
@@ -186,14 +187,31 @@ fn create_player_state_server_messages(player: &Player, current_player_id: Playe
     [state_msg, turn_msg]
 }
 
-async fn handle_player_name_change_request(client: &SocketAddr, name_request: String, comm: &mut ControllerCommunicator, lookup: &mut ControllerLookup) {
-    let existing_client_using_name = lookup.client_address_to_name.iter()
-        .find(|(_, name)| *name == &name_request)
-        .map(|(address, _)| address);
-    if let Some(existing_port_using_name) = existing_client_using_name {
-        debug!(player_name = name_request, %existing_port_using_name, "Player name already in use");
-        return;
-    }
+async fn handle_player_name_change_request(client: &SocketAddr,
+                                           name_request: PlayerIdentityRequest,
+                                           comm: &mut ControllerCommunicator,
+                                           lookup: &mut ControllerLookup,
+                                           random_name_gen: &mut RandomNameGenerator
+) {
+    let new_player_identity: go_fish_web::PlayerIdentity = match name_request {
+        PlayerIdentityRequest::RequestedName(name) => {
+            let existing_client_using_name = lookup.client_address_to_name.iter()
+                .find(|(_, existing_name)| *existing_name == &name)
+                .map(|(address, _)| address);
+            match existing_client_using_name {
+                Some(existing_port_using_name) => {
+                    debug!(player_name = name, %existing_port_using_name, "Player name already in use. Generating a random name instead.");
+                    let random_name = random_name_gen.get();
+                    RandomPlayerIdentity(random_name, RandomPlayerIdentityReason::RequestedIdentityAlreadyInUse(name))
+                },
+                None => RequestedPlayerIdentity(name)
+            }
+        }
+        PlayerIdentityRequest::RandomName => {
+            let random_name = random_name_gen.get();
+            RandomPlayerIdentity(random_name, RandomPlayerIdentityReason::RandomIdentityRequested)
+        }
+    };
 
     let old_name = lookup.client_address_to_name.get(client);
     let old_name = match old_name {
@@ -204,10 +222,19 @@ async fn handle_player_name_change_request(client: &SocketAddr, name_request: St
         }
     };
 
-    update_name_lookups(client, old_name.clone(), name_request.clone(), lookup).unwrap();
-    debug!(old_name, name_request, %client, "Successfully updated name lookups for client");
-    let msg = ServerMessage::PlayerIdentity(name_request.clone());
-    let tx = &comm.client_server_messages_tx[&lookup.name_to_player_id[&name_request]];
+    if random_name_gen.random_names.contains(&old_name) {
+        random_name_gen.available_names.push(old_name.clone());
+    }
+
+    let new_name = match &new_player_identity {
+        RequestedPlayerIdentity(name) => name.clone(),
+        RandomPlayerIdentity(name, _) => name.clone()
+    };
+
+    update_name_lookups(client, old_name.clone(), new_name.clone(), lookup).unwrap();
+    debug!(old_name, new_name, %client, "Successfully updated name lookups for client");
+    let msg = ServerMessage::PlayerIdentity(new_player_identity);
+    let tx = &comm.client_server_messages_tx[&lookup.name_to_player_id[&new_name]];
     _ = tx.send(msg).await;
 }
 
@@ -302,7 +329,7 @@ fn do_not_have_rank_hook_guard(current_player_hand: Hand,
     }
 }
 
-async fn run_controller(mut comm: ControllerCommunicator, mut lookup: ControllerLookup) {
+async fn run_controller(mut comm: ControllerCommunicator, mut lookup: ControllerLookup, mut random_name_generator: RandomNameGenerator) {
     debug!("Running controller handler");
     let mut deck = Deck::new();
     deck.shuffle();
@@ -332,9 +359,9 @@ async fn run_controller(mut comm: ControllerCommunicator, mut lookup: Controller
                     break;
                 }
             },
-            ClientMessage::PlayerNameChangeRequest(name_request) => {
-                debug!(player_name = client_name, new_name = name_request, "Handling player name change request");
-                handle_player_name_change_request(&msg.client, name_request, &mut comm, &mut lookup).await;
+            ClientMessage::RequestPlayerIdentity(id_req) => {
+                debug!(player_name = client_name, identity_request = ?id_req, "Handling player identity request");
+                handle_player_name_change_request(&msg.client, id_req, &mut comm, &mut lookup, &mut random_name_generator).await;
             }
             ClientMessage::Disconnect => {
                 debug!("Sending Close message to all clients");
@@ -443,7 +470,7 @@ async fn main() {
     let (client_message_tx, client_message_rx) = mpsc::channel::<AddressedClientMessage>(10);
     let mut clients_tx: HashMap<PlayerId, mpsc::Sender<ServerMessage>> = HashMap::new();
 
-    let mut names = vec!["alpha", "bravo", "charlie"];
+    let mut random_name_generator = RandomNameGenerator::default();
     let mut client_address_to_name: HashMap<SocketAddr, String> = HashMap::new();
     let mut name_to_player_id: HashMap<String, PlayerId> = HashMap::new();
     let mut player_id_to_name: HashMap<PlayerId, String> = HashMap::new();
@@ -455,7 +482,7 @@ async fn main() {
             .expect("connected streams should have a peer address");
         info!(client_address = %peer, "Client connected");
 
-        let player_name = names.pop().unwrap();
+        let player_name = random_name_generator.get();
         let player_id = PlayerId(pcount);
         pcount += 1;
         debug!(client_address = %peer, player_name, player_id = player_id.0, "New player mapped to client");
@@ -493,7 +520,7 @@ async fn main() {
     drop(client_message_tx);
 
     info!(config.player_count, "Max clients connected. Starting game.");
-    _ = tokio::spawn(run_controller(controller_communicator, lookup)).await;
+    _ = tokio::spawn(run_controller(controller_communicator, lookup, random_name_generator)).await;
 }
 
 /// go-fish game server
