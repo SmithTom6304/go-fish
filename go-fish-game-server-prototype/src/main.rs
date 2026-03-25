@@ -2,7 +2,7 @@ use anyhow::anyhow;
 use clap::Parser;
 use futures_util::{SinkExt, StreamExt};
 use go_fish::{Deck, Game, Hand, Hook, Player, PlayerId, Rank};
-use go_fish_game_server::{AddressedClientMessage, Config};
+use go_fish_game_server_prototype::{AddressedClientMessage, Config};
 use go_fish_web::HookError::{CannotTargetYourself, NotYourTurn, YouDoNotHaveRank};
 use go_fish_web::{ClientHookRequest, ClientMessage, GameResult, HookError};
 use go_fish_web::{FullHookRequest, HookAndResult, ServerMessage};

@@ -1,5 +1,5 @@
 [package]
-name = "go-fish-game-server"
+name = "go-fish-game-server-prototype"
 version = "0.1.0"
 edition = "2024"
 

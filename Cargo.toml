@@ -4,5 +4,5 @@ members = [
     "go-fish",
     "go-fish-web",
     "go-fish-cli-client",
-    "go-fish-game-server"
+    "go-fish-game-server-prototype"
 ]
