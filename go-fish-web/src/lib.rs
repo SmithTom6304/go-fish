@@ -6,19 +6,33 @@ use serde::Serialize;
 #[derive(Debug, Serialize, Deserialize)]
 pub enum ClientMessage {
     Hook(ClientHookRequest),
-    PlayerNameChangeRequest(String),
-    Disconnect
+    Identity,
+    CreateLobby,
+    JoinLobby(String),
+    LeaveLobby,
+    StartGame,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum ServerMessage {
     HookAndResult(HookAndResult),
     HookError(HookError),
-    PlayerState(PlayerState),
+    HandState(HandState),
     PlayerTurn(PlayerTurnValue),
     PlayerIdentity(String),
     GameResult(GameResult),
-    Disconnect
+    LobbyJoined {
+        lobby_id: String,
+        leader: String,
+        players: Vec<String>,
+        max_players: usize,
+    },
+    LobbyUpdated {
+        leader: String,
+        players: Vec<String>,
+    },
+    GameStarted,
+    Error(String),
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -55,7 +69,7 @@ pub struct HookAndResult {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct PlayerState {
+pub struct HandState {
     pub hand: Hand,
     pub completed_books: Vec<CompleteBook>,
 }
