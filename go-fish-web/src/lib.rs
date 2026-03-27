@@ -31,6 +31,7 @@ pub enum ServerMessage {
         leader: String,
         players: Vec<String>,
     },
+    LobbyLeft(LobbyLeftReason),
     GameStarted,
     Error(String),
 }
@@ -78,4 +79,9 @@ pub struct HandState {
 pub struct GameResult {
     pub winners: Vec<String>,
     pub losers: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub enum LobbyLeftReason {
+    RequestedByPlayer
 }

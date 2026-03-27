@@ -1,9 +1,10 @@
+use crate::connection::{LobbyEvent, LobbyOutboundMessage};
+use go_fish_web::LobbyLeftReason;
+use go_fish_web::{ClientMessage, ServerMessage};
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use tokio::sync::mpsc;
-use go_fish_web::{ClientMessage, ServerMessage};
 use tracing::{debug, info};
-use crate::connection::{LobbyEvent, LobbyOutboundMessage};
 
 // ── Client phase ──────────────────────────────────────────────────────────────
 
@@ -349,14 +350,17 @@ impl LobbyManager {
 
                 let msgs = self.remove_player_from_lobby(address, &lobby_id);
 
+                for (addr, msg) in msgs {
+                    self.send(addr, msg).await;
+                }
+
                 // Update player phase back to PreLobby
                 if let Some(record) = self.players.get_mut(&address) {
                     record.phase = ClientPhase::PreLobby;
                 }
 
-                for (addr, msg) in msgs {
-                    self.send(addr, msg).await;
-                }
+                // Send LeftLobby to client
+                self.send(address, ServerMessage::LobbyLeft(LobbyLeftReason::RequestedByPlayer)).await;
 
                 info!(lobby_id = %lobby_id, player = %player_name, "player left lobby");
             }
