@@ -31,7 +31,13 @@ pub struct PreLobbyState {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum PreLobbyInputState {
     #[default] None,
-    LobbyId(String)
+    LobbyId(PreLobbyInputLobbyIdState)
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct PreLobbyInputLobbyIdState {
+    pub lobby_id: String,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -140,7 +146,15 @@ fn apply_server_message(state: &mut AppState, msg: &ServerMessage) {
                     s.status = msg.clone();
                 }
                 Screen::PreLobby(s) => {
-                    s.error = Some(msg.clone());
+                    match &mut s.input_state {
+                        PreLobbyInputState::None => {
+                            s.error = Some(msg.clone());
+                        }
+                        PreLobbyInputState::LobbyId(state) => {
+                            state.error = Some(msg.clone());
+                            state.lobby_id = "".to_string();
+                        }
+                    }
                 }
                 Screen::Lobby(s) => {
                     s.error = Some(msg.clone());

@@ -8,7 +8,7 @@ use tokio::sync::mpsc::error::TryRecvError;
 use go_fish_web::ClientMessage;
 
 use crate::network::NetworkEvent;
-use crate::state::{apply_network_event, is_valid_lobby_id, AppState, Screen};
+use crate::state::{apply_network_event, is_valid_lobby_id, AppState, PreLobbyInputLobbyIdState, Screen};
 use crate::ui::render;
 
 pub async fn run_event_loop<B: Backend>(
@@ -37,10 +37,9 @@ where
         if poll(Duration::from_millis(50))? {
             match read()? {
                 Event::Key(key) => {
-                    // Quit: q or Ctrl+C on any screen
-                    let is_quit = key.code == KeyCode::Char('q')
-                        || (key.code == KeyCode::Char('c')
-                            && key.modifiers.contains(KeyModifiers::CONTROL));
+                    // Quit: Ctrl+C on any screen
+                    let is_quit = key.code == KeyCode::Char('c')
+                        && key.modifiers.contains(KeyModifiers::CONTROL);
 
                     if is_quit {
                         if let Screen::Lobby(_) = &state.screen {
@@ -56,15 +55,18 @@ where
                                     if key.code == KeyCode::Char('c') {
                                         let _ = client_msg_tx.send(ClientMessage::CreateLobby).await;
                                     } else if key.code == KeyCode::Char('q') {
+                                        let _ = client_msg_tx.send(ClientMessage::LeaveLobby).await;
                                         break;
                                     } else if key.code == KeyCode::Char('j') {
-                                        pre.input_state = crate::state::PreLobbyInputState::LobbyId(String::new());
+                                        pre.input_state = crate::state::PreLobbyInputState::LobbyId(PreLobbyInputLobbyIdState::default());
                                     }
                                 }
-                                crate::state::PreLobbyInputState::LobbyId(lobby_id) => {
+                                crate::state::PreLobbyInputState::LobbyId(lobby_id_state) => {
+                                    let lobby_id = &mut lobby_id_state.lobby_id;
                                     match key.code {
                                         KeyCode::Char(ch) => {
                                             lobby_id.push(ch);
+                                            lobby_id_state.error = None;
                                         },
                                         KeyCode::Backspace => {
                                             lobby_id.pop();
@@ -76,7 +78,7 @@ where
                                                     .send(ClientMessage::JoinLobby(lobby_id))
                                                     .await;
                                             } else {
-                                                pre.error =
+                                                lobby_id_state.error =
                                                     Some("Please enter a valid Lobby ID".to_string());
                                             }
                                         },
