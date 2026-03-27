@@ -91,7 +91,7 @@ where
                             }
                         }
                         Screen::Lobby(_) => {
-                            if key.code == KeyCode::Char('l') {
+                            if key.code == KeyCode::Char('q') {
                                 let _ = client_msg_tx.send(ClientMessage::LeaveLobby).await;
                             }
                         }

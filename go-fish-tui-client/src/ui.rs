@@ -113,51 +113,100 @@ pub fn render_pre_lobby(f: &mut Frame, state: &PreLobbyState) {
 
 pub fn render_lobby(f: &mut Frame, state: &LobbyState) {
     let area = f.area();
-    let chunks = Layout::default()
+    let bg_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // lobby info header
-            Constraint::Min(5),    // player list
-            Constraint::Length(3), // keybind hints
-            Constraint::Length(3), // error (if any)
+            Constraint::Length(1), // player name
+            Constraint::Fill(1), // go-fish print
+            Constraint::Length(1), // error (if any)
+            Constraint::Length(1), // keyboard hints
         ])
         .split(area);
 
-    // Lobby info header
-    let header = Paragraph::new(format!(
-        "Lobby: {}  |  Max players: {}",
-        state.lobby_id, state.max_players
-    ))
-    .block(Block::default().borders(Borders::ALL).title("Lobby"));
-    f.render_widget(header, chunks[0]);
+    // Player name
+    let player_name = Line::from(vec![
+        Span::styled("You are player ", Style::default()),
+        Span::styled(&state.player_name, Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
+    ]);
+    f.render_widget(player_name, bg_chunks[0]);
 
-    // Player list
-    let player_lines: Vec<String> = state
-        .players
-        .iter()
-        .map(|p| {
-            if p == &state.leader {
-                format!("★ {}", p)
-            } else {
-                format!("  {}", p)
-            }
-        })
-        .collect();
-    let player_list = Paragraph::new(player_lines.join("\n"))
-        .block(Block::default().borders(Borders::ALL).title("Players"));
-    f.render_widget(player_list, chunks[1]);
-
-    // Keybind hints
-    let hints = Paragraph::new("[l] Leave lobby  [q] Quit").alignment(Alignment::Center);
-    f.render_widget(hints, chunks[2]);
+    // Go-Fish block print
+    let go_fish_str = include_str!("assets/go-fish-display-string.txt");
+    let go_fish_display_area = bg_chunks[1];
+    let go_fish_para = Paragraph::new(go_fish_str)
+        .block(Block::default()
+            .borders(Borders::ALL)
+            .padding(Padding::new(
+                0, // left
+                0, // right
+                go_fish_display_area.height / 3, // top
+                0, // bottom
+            )
+            )
+        ).alignment(Alignment::Center);
+    f.render_widget(go_fish_para, go_fish_display_area);
 
     // Error message
     if let Some(err) = &state.error {
         let error_para = Paragraph::new(err.as_str())
-            .style(Style::default().fg(Color::Red))
-            .alignment(Alignment::Center);
-        f.render_widget(error_para, chunks[3]);
+            .style(Style::default().fg(Color::Red));
+        f.render_widget(error_para, bg_chunks[1]);
     }
+
+    // Keybind hints
+    let can_start = state.players.len() >= 2 && state.leader == state.player_name;
+    let hints = match can_start {
+        true => "[s] Start game [q] Leave lobby",
+        false => "[q] Leave lobby",
+    };
+    let hints = Paragraph::new(hints)
+        .alignment(Alignment::Center);
+    f.render_widget(hints, bg_chunks[3]);
+
+    // Lobby overlay
+    let centered_area = area.centered(Constraint::Percentage(40), Constraint::Length(20));
+    let fg_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // lobby id
+            Constraint::Min(8), // players
+        ])
+        .split(centered_area);
+    f.render_widget(Clear, centered_area);
+
+    // Lobby info header
+    let header = Paragraph::new(format!("Lobby ID: {}", state.lobby_id))
+        .block(Block::default().borders(Borders::ALL));
+    f.render_widget(header, fg_chunks[0]);
+
+    // Player list
+    let player_lines: Vec<Line> = state
+        .players
+        .iter()
+        .map(|p| {
+            let str = match p == &state.leader {
+                true => format!("★ {}", p),
+                false => format!("  {}", p),
+            };
+            let is_client = p == &state.player_name;
+            let style = if is_client {
+                Style::default().fg(Color::Green)
+            } else {
+                Style::default()
+            };
+            Line::from(vec![Span::styled(str, style)])
+        })
+        .collect();
+    let players_title = format!("Players: ({}/{})", state.players.len(), state.max_players);
+    let player_list = Paragraph::new(player_lines)
+        .block(Block::default().borders(Borders::ALL).title(players_title));
+    f.render_widget(player_list, fg_chunks[1]);
+
+
+    let player_name = Line::from(vec![
+        Span::styled("You are player ", Style::default()),
+        Span::styled(&state.player_name, Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
+    ]);
 }
 
 pub fn render(f: &mut Frame, app: &AppState) {
