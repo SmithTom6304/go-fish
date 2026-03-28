@@ -13,7 +13,7 @@ mod tests {
     use go_fish_web::{
         ClientMessage, ClientHookRequest,
         ServerMessage, HookAndResult, HookError, HandState, PlayerTurnValue,
-        FullHookRequest, GameResult,
+        FullHookRequest, GameResult, GameSnapshot, HookOutcome, OpponentState,
     };
     use go_fish::{Hand, IncompleteBook, CompleteBook, Card, Suit, HookResult};
 
@@ -139,6 +139,40 @@ mod tests {
             .prop_map(|(winners, losers)| GameResult { winners, losers })
     }
 
+    fn hook_outcome_strategy() -> impl Strategy<Value = HookOutcome> {
+        ("[a-zA-Z0-9]{1,16}", "[a-zA-Z0-9]{1,16}", rank_strategy(), hook_result_strategy())
+            .prop_map(|(fisher_name, target_name, rank, result)| HookOutcome {
+                fisher_name,
+                target_name,
+                rank,
+                result,
+            })
+    }
+
+    fn opponent_state_strategy() -> impl Strategy<Value = OpponentState> {
+        ("[a-zA-Z0-9]{1,16}", 0usize..=13usize, 0usize..=13usize)
+            .prop_map(|(name, card_count, completed_book_count)| OpponentState {
+                name,
+                card_count,
+                completed_book_count,
+            })
+    }
+
+    fn game_snapshot_strategy() -> impl Strategy<Value = GameSnapshot> {
+        (
+            hand_state_strategy(),
+            prop::collection::vec(opponent_state_strategy(), 0..=3),
+            "[a-zA-Z0-9]{1,16}",
+            prop::option::of(hook_outcome_strategy()),
+        )
+            .prop_map(|(hand_state, opponents, active_player, last_hook_outcome)| GameSnapshot {
+                hand_state,
+                opponents,
+                active_player,
+                last_hook_outcome,
+            })
+    }
+
     fn server_message_strategy() -> impl Strategy<Value = ServerMessage> {
         prop_oneof![
             hook_and_result_strategy().prop_map(ServerMessage::HookAndResult),
@@ -164,6 +198,8 @@ mod tests {
             ).prop_map(|(leader, players)| ServerMessage::LobbyUpdated { leader, players }),
             Just(()).prop_map(|_| ServerMessage::GameStarted),
             "[a-zA-Z0-9 ]{1,32}".prop_map(ServerMessage::Error),
+            // Feature: go-fish-tui-client-gameplay, Property 25: Game message serialisation round-trips
+            game_snapshot_strategy().prop_map(ServerMessage::GameSnapshot),
         ]
     }
 
@@ -197,7 +233,19 @@ mod tests {
 
     // ── Property 3: Invalid frames are discarded without crash ────────────────
 
-    // Feature: go-fish-tui-client, Property 3: Invalid frames are discarded without crash
+    // Feature: go-fish-tui-client-gameplay, Property 26: Rank serialisation round-trip
+    // Validates: Requirements 9.7
+    proptest! {
+        #[test]
+        fn prop_rank_round_trip(rank in rank_strategy()) {
+            let json = serde_json::to_string(&rank).unwrap();
+            let back: go_fish::Rank = serde_json::from_str(&json).unwrap();
+            let json2 = serde_json::to_string(&back).unwrap();
+            prop_assert_eq!(json, json2);
+        }
+    }
+
+    // ── Property 3: Invalid frames are discarded without crash ────────────────    // Feature: go-fish-tui-client, Property 3: Invalid frames are discarded without crash
     // Validates: Requirements 8.3
     proptest! {
         #[test]

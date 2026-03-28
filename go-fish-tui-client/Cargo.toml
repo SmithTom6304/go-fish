@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+go-fish = { path = "../go-fish" }
 go-fish-web = { path = "../go-fish-web" }
 ratatui = "0.30"
 tokio = { version = "1", features = ["full"] }
@@ -19,4 +20,3 @@ tracing-subscriber = "0.3"
 [dev-dependencies]
 proptest = "1"
 tokio = { version = "1", features = ["rt", "macros"] }
-go-fish = { path = "../go-fish" }

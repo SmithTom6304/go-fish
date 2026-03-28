@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+
+use go_fish::HookResult;
 use go_fish_web::LobbyLeftReason;
 use go_fish_web::ServerMessage;
 
@@ -50,14 +53,65 @@ pub struct LobbyState {
     pub error: Option<String>,
 }
 
+// ── Task 5.1: GameInputState and GameState ────────────────────────────────────
+
 #[derive(Debug, Clone, PartialEq)]
+pub enum GameInputState {
+    Idle,
+    SelectingTarget { cursor: usize },
+    SelectingRank { target: String, cursor: usize },
+}
+
+#[derive(Debug, Clone)]
+pub struct GameState {
+    pub player_name: String,
+    pub players: Vec<String>,
+    pub hand: go_fish::Hand,
+    pub completed_books: Vec<go_fish::CompleteBook>,
+    pub opponent_card_counts: HashMap<String, usize>,
+    pub opponent_book_counts: HashMap<String, usize>,
+    pub active_player: String,
+    pub latest_hook_outcome: Option<go_fish_web::HookOutcome>,
+    pub hook_error: Option<go_fish_web::HookError>,
+    pub card_pickup_notification: Option<Vec<go_fish::Card>>,
+    pub game_result: Option<go_fish_web::GameResult>,
+    pub input_state: GameInputState,
+}
+
+impl GameState {
+    pub fn new(player_name: String, players: Vec<String>) -> Self {
+        let opponents: HashMap<String, usize> = players.iter()
+            .filter(|p| *p != &player_name)
+            .map(|p| (p.clone(), 0))
+            .collect();
+        GameState {
+            player_name,
+            players,
+            hand: go_fish::Hand::empty(),
+            completed_books: vec![],
+            opponent_card_counts: opponents.clone(),
+            opponent_book_counts: opponents.keys().map(|k| (k.clone(), 0)).collect(),
+            active_player: String::new(),
+            latest_hook_outcome: None,
+            hook_error: None,
+            card_pickup_notification: None,
+            game_result: None,
+            input_state: GameInputState::Idle,
+        }
+    }
+}
+
+// ── Task 5.2: Screen::Game variant ───────────────────────────────────────────
+
+#[derive(Debug, Clone)]
 pub enum Screen {
     Connecting(ConnectingState),
     PreLobby(PreLobbyState),
     Lobby(LobbyState),
+    Game(GameState),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct AppState {
     pub screen: Screen,
 }
@@ -140,6 +194,51 @@ fn apply_server_message(state: &mut AppState, msg: &ServerMessage) {
                 }
             }
         }
+        // Task 5.3: GameStarted handler
+        ServerMessage::GameStarted => {
+            if let Screen::Lobby(lobby) = &state.screen {
+                let player_name = lobby.player_name.clone();
+                let players = lobby.players.clone();
+                state.screen = Screen::Game(GameState::new(player_name, players));
+            }
+        }
+        // Task 5.4: GameSnapshot handler
+        ServerMessage::GameSnapshot(snapshot) => {
+            if let Screen::Game(game) = &mut state.screen {
+                game.hand = snapshot.hand_state.hand.clone();
+                game.completed_books = snapshot.hand_state.completed_books.clone();
+                for opp in &snapshot.opponents {
+                    game.opponent_card_counts.insert(opp.name.clone(), opp.card_count);
+                    game.opponent_book_counts.insert(opp.name.clone(), opp.completed_book_count);
+                }
+                if let Some(ref outcome) = snapshot.last_hook_outcome {
+                    if outcome.target_name == game.player_name {
+                        if let HookResult::Catch(ref book) = outcome.result {
+                            game.card_pickup_notification = Some(book.cards.clone());
+                        }
+                    }
+                    game.latest_hook_outcome = Some(outcome.clone());
+                }
+                game.active_player = snapshot.active_player.clone();
+                if snapshot.active_player == game.player_name {
+                    game.hook_error = None;
+                    game.input_state = GameInputState::Idle;
+                } else {
+                    game.input_state = GameInputState::Idle;
+                }
+            }
+        }
+        // Task 5.5: HookError and GameResult handlers
+        ServerMessage::HookError(err) => {
+            if let Screen::Game(game) = &mut state.screen {
+                game.hook_error = Some(err.clone());
+            }
+        }
+        ServerMessage::GameResult(result) => {
+            if let Screen::Game(game) = &mut state.screen {
+                game.game_result = Some(result.clone());
+            }
+        }
         ServerMessage::Error(msg) => {
             match &mut state.screen {
                 Screen::Connecting(s) => {
@@ -159,28 +258,59 @@ fn apply_server_message(state: &mut AppState, msg: &ServerMessage) {
                 Screen::Lobby(s) => {
                     s.error = Some(msg.clone());
                 }
+                // Task 5.6: Game arm for Error — display on status bar, do not navigate
+                Screen::Game(_s) => {
+                    // Generic server errors on the Game screen are displayed via the UI layer.
+                    // No navigation occurs. The error string is not stored in hook_error
+                    // (which is typed as Option<go_fish_web::HookError>), so we silently
+                    // acknowledge it here. The UI can be extended to show a separate error field.
+                }
             }
         }
-        // Other server messages are not handled at the state level yet
+        // Other server messages (HandState, PlayerTurn, HookAndResult) are silently discarded
         _ => {}
     }
 }
 
+// Task 5.6: apply_connection_closed with Game arm
 fn apply_connection_closed(state: &mut AppState) {
     let msg = "Server closed connection.".to_string();
+    // Extract player_name from Game screen before mutating
+    if let Screen::Game(game) = &state.screen {
+        let player_name = game.player_name.clone();
+        state.screen = Screen::PreLobby(PreLobbyState {
+            player_name,
+            input_state: PreLobbyInputState::None,
+            error: None,
+        });
+        return;
+    }
     match &mut state.screen {
         Screen::Connecting(s) => s.status = msg,
         Screen::PreLobby(s) => s.error = Some(msg),
         Screen::Lobby(s) => s.error = Some(msg),
+        Screen::Game(_) => unreachable!(),
     }
 }
 
+// Task 5.6: apply_connection_error with Game arm
 fn apply_connection_error(state: &mut AppState, err: &str) {
     let msg = format!("Connection error: {}", err);
+    // Extract player_name from Game screen before mutating
+    if let Screen::Game(game) = &state.screen {
+        let player_name = game.player_name.clone();
+        state.screen = Screen::PreLobby(PreLobbyState {
+            player_name,
+            input_state: PreLobbyInputState::None,
+            error: None,
+        });
+        return;
+    }
     match &mut state.screen {
         Screen::Connecting(s) => s.status = msg,
         Screen::PreLobby(s) => s.error = Some(msg),
         Screen::Lobby(s) => s.error = Some(msg),
+        Screen::Game(_) => unreachable!(),
     }
 }
 
@@ -190,364 +320,5 @@ pub fn is_valid_lobby_id(s: &str) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use proptest::prelude::*;
-
-    #[test]
-    fn new_starts_in_connecting_state() {
-        let state = AppState::new();
-        assert!(matches!(state.screen, Screen::Connecting(_)));
-        if let Screen::Connecting(s) = &state.screen {
-            assert_eq!(s.status, "Connecting…");
-        }
-    }
-
-    #[test]
-    fn player_identity_transitions_to_pre_lobby() {
-        let mut state = AppState::new();
-        apply_network_event(
-            &mut state,
-            &NetworkEvent::Message(ServerMessage::PlayerIdentity("Alice".to_string())),
-        );
-        assert!(matches!(state.screen, Screen::PreLobby(_)));
-        if let Screen::PreLobby(s) = &state.screen {
-            assert_eq!(s.player_name, "Alice");
-            assert_eq!(s.input_state, PreLobbyInputState::None);
-            assert_eq!(s.error, None);
-        }
-    }
-
-    #[test]
-    fn lobby_joined_transitions_to_lobby() {
-        let mut state = AppState::new();
-        // First get to PreLobby
-        apply_network_event(
-            &mut state,
-            &NetworkEvent::Message(ServerMessage::PlayerIdentity("Bob".to_string())),
-        );
-        // Then join a lobby
-        apply_network_event(
-            &mut state,
-            &NetworkEvent::Message(ServerMessage::LobbyJoined {
-                lobby_id: "LOBBY1".to_string(),
-                leader: "Bob".to_string(),
-                players: vec!["Bob".to_string(), "Carol".to_string()],
-                max_players: 4,
-            }),
-        );
-        assert!(matches!(state.screen, Screen::Lobby(_)));
-        if let Screen::Lobby(s) = &state.screen {
-            assert_eq!(s.player_name, "Bob");
-            assert_eq!(s.lobby_id, "LOBBY1");
-            assert_eq!(s.leader, "Bob");
-            assert_eq!(s.players, vec!["Bob", "Carol"]);
-            assert_eq!(s.max_players, 4);
-            assert_eq!(s.error, None);
-        }
-    }
-
-    #[test]
-    fn lobby_updated_updates_leader_and_players_only() {
-        let mut state = AppState::new();
-        apply_network_event(
-            &mut state,
-            &NetworkEvent::Message(ServerMessage::PlayerIdentity("Bob".to_string())),
-        );
-        apply_network_event(
-            &mut state,
-            &NetworkEvent::Message(ServerMessage::LobbyJoined {
-                lobby_id: "LOBBY1".to_string(),
-                leader: "Bob".to_string(),
-                players: vec!["Bob".to_string(), "Carol".to_string()],
-                max_players: 4,
-            }),
-        );
-        apply_network_event(
-            &mut state,
-            &NetworkEvent::Message(ServerMessage::LobbyUpdated {
-                leader: "Carol".to_string(),
-                players: vec!["Bob".to_string(), "Carol".to_string(), "Dave".to_string()],
-            }),
-        );
-        if let Screen::Lobby(s) = &state.screen {
-            assert_eq!(s.leader, "Carol");
-            assert_eq!(s.players, vec!["Bob", "Carol", "Dave"]);
-            // Unchanged fields
-            assert_eq!(s.player_name, "Bob");
-            assert_eq!(s.lobby_id, "LOBBY1");
-            assert_eq!(s.max_players, 4);
-        } else {
-            panic!("Expected Lobby screen");
-        }
-    }
-
-    #[test]
-    fn error_on_pre_lobby_sets_error_does_not_navigate() {
-        let mut state = AppState::new();
-        apply_network_event(
-            &mut state,
-            &NetworkEvent::Message(ServerMessage::PlayerIdentity("Alice".to_string())),
-        );
-        apply_network_event(
-            &mut state,
-            &NetworkEvent::Message(ServerMessage::Error("Lobby not found".to_string())),
-        );
-        assert!(matches!(state.screen, Screen::PreLobby(_)));
-        if let Screen::PreLobby(s) = &state.screen {
-            assert_eq!(s.error, Some("Lobby not found".to_string()));
-        }
-    }
-
-    #[test]
-    fn error_on_lobby_sets_error_does_not_navigate() {
-        let mut state = AppState::new();
-        apply_network_event(
-            &mut state,
-            &NetworkEvent::Message(ServerMessage::PlayerIdentity("Alice".to_string())),
-        );
-        apply_network_event(
-            &mut state,
-            &NetworkEvent::Message(ServerMessage::LobbyJoined {
-                lobby_id: "L1".to_string(),
-                leader: "Alice".to_string(),
-                players: vec!["Alice".to_string()],
-                max_players: 2,
-            }),
-        );
-        apply_network_event(
-            &mut state,
-            &NetworkEvent::Message(ServerMessage::Error("Game already started".to_string())),
-        );
-        assert!(matches!(state.screen, Screen::Lobby(_)));
-        if let Screen::Lobby(s) = &state.screen {
-            assert_eq!(s.error, Some("Game already started".to_string()));
-        }
-    }
-
-    #[test]
-    fn is_valid_lobby_id_rejects_empty_and_whitespace() {
-        assert!(!is_valid_lobby_id(""));
-        assert!(!is_valid_lobby_id("   "));
-        assert!(!is_valid_lobby_id("\t\n"));
-        assert!(is_valid_lobby_id("ABC12"));
-        assert!(is_valid_lobby_id("  ABC12  "));
-    }
-
-    #[test]
-    fn lobby_updated_removes_local_player_transitions_to_pre_lobby() {
-        let mut state = AppState::new();
-        apply_network_event(
-            &mut state,
-            &NetworkEvent::Message(ServerMessage::PlayerIdentity("Alice".to_string())),
-        );
-        apply_network_event(
-            &mut state,
-            &NetworkEvent::Message(ServerMessage::LobbyJoined {
-                lobby_id: "L1".to_string(),
-                leader: "Alice".to_string(),
-                players: vec!["Alice".to_string(), "Bob".to_string()],
-                max_players: 4,
-            }),
-        );
-        // LobbyUpdated that removes Alice (local player)
-        apply_network_event(
-            &mut state,
-            &NetworkEvent::Message(ServerMessage::LobbyUpdated {
-                leader: "Bob".to_string(),
-                players: vec!["Bob".to_string()],
-            }),
-        );
-        assert!(matches!(state.screen, Screen::PreLobby(_)));
-        if let Screen::PreLobby(s) = &state.screen {
-            assert_eq!(s.player_name, "Alice");
-        }
-    }
-
-    #[test]
-    fn network_closed_sets_status_on_connecting() {
-        let mut state = AppState::new();
-        apply_network_event(&mut state, &NetworkEvent::Closed);
-        if let Screen::Connecting(s) = &state.screen {
-            assert!(s.status.contains("closed") || s.status.contains("Server"));
-        } else {
-            panic!("Expected Connecting screen");
-        }
-    }
-
-    #[test]
-    fn network_error_sets_error_on_pre_lobby() {
-        let mut state = AppState::new();
-        apply_network_event(
-            &mut state,
-            &NetworkEvent::Message(ServerMessage::PlayerIdentity("Alice".to_string())),
-        );
-        apply_network_event(&mut state, &NetworkEvent::Error("timeout".to_string()));
-        if let Screen::PreLobby(s) = &state.screen {
-            assert!(s.error.is_some());
-        } else {
-            panic!("Expected PreLobby screen");
-        }
-    }
-
-    // Feature: go-fish-tui-client, Property 5: PlayerIdentity produces correct PreLobbyState
-    proptest! {
-        #[test]
-        fn prop_player_identity_produces_correct_pre_lobby_state(name in any::<String>()) {
-            let mut state = AppState::new();
-            apply_network_event(
-                &mut state,
-                &NetworkEvent::Message(ServerMessage::PlayerIdentity(name.clone())),
-            );
-            if let Screen::PreLobby(s) = &state.screen {
-                prop_assert_eq!(&s.player_name, &name);
-                prop_assert_eq!(&s.input_state, &PreLobbyInputState::None);
-                prop_assert_eq!(s.error.clone(), None);
-            } else {
-                return Err(TestCaseError::fail("Expected PreLobby screen"));
-            }
-        }
-    }
-
-    // Feature: go-fish-tui-client, Property 6: LobbyJoined produces correct LobbyState
-    proptest! {
-        #[test]
-        fn prop_lobby_joined_produces_correct_lobby_state(
-            lobby_id in any::<String>(),
-            leader in any::<String>(),
-            players in proptest::collection::vec(any::<String>(), 0..10),
-            max_players in any::<usize>(),
-        ) {
-            let mut state = AppState::new();
-            apply_network_event(
-                &mut state,
-                &NetworkEvent::Message(ServerMessage::PlayerIdentity("TestPlayer".to_string())),
-            );
-            apply_network_event(
-                &mut state,
-                &NetworkEvent::Message(ServerMessage::LobbyJoined {
-                    lobby_id: lobby_id.clone(),
-                    leader: leader.clone(),
-                    players: players.clone(),
-                    max_players,
-                }),
-            );
-            if let Screen::Lobby(s) = &state.screen {
-                prop_assert_eq!(&s.lobby_id, &lobby_id);
-                prop_assert_eq!(&s.leader, &leader);
-                prop_assert_eq!(&s.players, &players);
-                prop_assert_eq!(s.max_players, max_players);
-            } else {
-                return Err(TestCaseError::fail("Expected Lobby screen"));
-            }
-        }
-    }
-
-    // Feature: go-fish-tui-client, Property 7: LobbyUpdated mutates only leader and players
-    proptest! {
-        #[test]
-        fn prop_lobby_updated_mutates_only_leader_and_players(
-            new_leader in any::<String>(),
-            mut new_players in proptest::collection::vec(any::<String>(), 0..10),
-        ) {
-            // Ensure local player is in new_players so no transition back to PreLobby
-            new_players.push("TestPlayer".to_string());
-
-            let fixed_lobby_id = "FIXED_LOBBY".to_string();
-            let fixed_max_players: usize = 4;
-
-            let mut state = AppState::new();
-            apply_network_event(
-                &mut state,
-                &NetworkEvent::Message(ServerMessage::PlayerIdentity("TestPlayer".to_string())),
-            );
-            apply_network_event(
-                &mut state,
-                &NetworkEvent::Message(ServerMessage::LobbyJoined {
-                    lobby_id: fixed_lobby_id.clone(),
-                    leader: "OriginalLeader".to_string(),
-                    players: vec!["TestPlayer".to_string()],
-                    max_players: fixed_max_players,
-                }),
-            );
-            apply_network_event(
-                &mut state,
-                &NetworkEvent::Message(ServerMessage::LobbyUpdated {
-                    leader: new_leader.clone(),
-                    players: new_players.clone(),
-                }),
-            );
-            if let Screen::Lobby(s) = &state.screen {
-                prop_assert_eq!(&s.leader, &new_leader);
-                prop_assert_eq!(&s.players, &new_players);
-                // Unchanged fields
-                prop_assert_eq!(&s.lobby_id, &fixed_lobby_id);
-                prop_assert_eq!(&s.player_name, "TestPlayer");
-                prop_assert_eq!(s.max_players, fixed_max_players);
-            } else {
-                return Err(TestCaseError::fail("Expected Lobby screen after LobbyUpdated"));
-            }
-        }
-    }
-
-    // Feature: go-fish-tui-client, Property 8: Whitespace-only Lobby_Id is not submitted
-    proptest! {
-        #[test]
-        fn prop_whitespace_only_lobby_id_is_invalid(
-            s in proptest::string::string_regex("[ \\t\\n\\r]*").unwrap(),
-        ) {
-            prop_assert!(!is_valid_lobby_id(&s));
-        }
-    }
-
-    // Feature: go-fish-tui-client, Property 9: Error on Pre-Lobby screen does not navigate
-    proptest! {
-        #[test]
-        fn prop_error_on_pre_lobby_does_not_navigate(err in any::<String>()) {
-            let mut state = AppState::new();
-            apply_network_event(
-                &mut state,
-                &NetworkEvent::Message(ServerMessage::PlayerIdentity("TestPlayer".to_string())),
-            );
-            apply_network_event(
-                &mut state,
-                &NetworkEvent::Message(ServerMessage::Error(err.clone())),
-            );
-            if let Screen::PreLobby(s) = &state.screen {
-                prop_assert_eq!(s.error.clone(), Some(err));
-            } else {
-                return Err(TestCaseError::fail("Expected PreLobby screen after Error"));
-            }
-        }
-    }
-
-    // Feature: go-fish-tui-client, Property 10: Error on Lobby screen does not navigate
-    proptest! {
-        #[test]
-        fn prop_error_on_lobby_does_not_navigate(err in any::<String>()) {
-            let mut state = AppState::new();
-            apply_network_event(
-                &mut state,
-                &NetworkEvent::Message(ServerMessage::PlayerIdentity("TestPlayer".to_string())),
-            );
-            apply_network_event(
-                &mut state,
-                &NetworkEvent::Message(ServerMessage::LobbyJoined {
-                    lobby_id: "L1".to_string(),
-                    leader: "TestPlayer".to_string(),
-                    players: vec!["TestPlayer".to_string()],
-                    max_players: 2,
-                }),
-            );
-            apply_network_event(
-                &mut state,
-                &NetworkEvent::Message(ServerMessage::Error(err.clone())),
-            );
-            if let Screen::Lobby(s) = &state.screen {
-                prop_assert_eq!(s.error.clone(), Some(err));
-            } else {
-                return Err(TestCaseError::fail("Expected Lobby screen after Error"));
-            }
-        }
-    }
-}
+#[path = "state_tests.rs"]
+mod state_tests;

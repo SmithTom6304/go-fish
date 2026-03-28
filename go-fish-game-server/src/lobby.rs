@@ -506,16 +506,6 @@ impl LobbyManager {
                     }
                 };
 
-                // Build HookAndResult message
-                let hook_and_result_msg = ServerMessage::HookAndResult(go_fish_web::HookAndResult {
-                    hook_request: go_fish_web::FullHookRequest {
-                        fisher_name: sender_name.clone(),
-                        target_name: target_name_str,
-                        rank: hook_request.rank,
-                    },
-                    hook_result: result.clone(),
-                });
-
                 // Collect updated game state
                 let (game_players, inactive_players, current_player_name, is_finished) = {
                     let lobby = self.lobbies.get(&lobby_id).unwrap();
@@ -533,12 +523,15 @@ impl LobbyManager {
                     (game_players, inactive_players, current_player_name, session.game.is_finished)
                 };
 
-                // Send HookAndResult to all players
-                for (addr, _) in &player_addrs_names {
-                    self.send(*addr, hook_and_result_msg.clone()).await;
-                }
+                // Build the HookOutcome for the last_hook_outcome field
+                let hook_outcome = go_fish_web::HookOutcome {
+                    fisher_name: sender_name.clone(),
+                    target_name: target_name_str,
+                    rank: hook_request.rank,
+                    result: result.clone(),
+                };
 
-                // Send updated HandState to each player
+                // Send personalised GameSnapshot to each player
                 for (addr, name) in &player_addrs_names {
                     let lobby = self.lobbies.get(&lobby_id).unwrap();
                     let session = match &lobby.state {
@@ -546,27 +539,50 @@ impl LobbyManager {
                         _ => continue,
                     };
                     let player_id = session.name_to_id[name];
-                    if let Some(gf_player) = game_players.iter().find(|p| p.id == player_id) {
-                        self.send(*addr, ServerMessage::HandState(go_fish_web::HandState {
+
+                    let hand_state = if let Some(gf_player) = game_players.iter().find(|p| p.id == player_id) {
+                        go_fish_web::HandState {
                             hand: gf_player.hand.clone(),
                             completed_books: gf_player.completed_books.clone(),
-                        })).await;
+                        }
                     } else if let Some(inactive) = inactive_players.iter().find(|p| p.id == player_id) {
-                        self.send(*addr, ServerMessage::HandState(go_fish_web::HandState {
+                        go_fish_web::HandState {
                             hand: go_fish::Hand::empty(),
                             completed_books: inactive.completed_books.clone(),
-                        })).await;
-                    }
-                }
-
-                // Send PlayerTurn to each player
-                for (addr, name) in &player_addrs_names {
-                    let turn_msg = if name == &current_player_name {
-                        go_fish_web::PlayerTurnValue::YourTurn
+                        }
                     } else {
-                        go_fish_web::PlayerTurnValue::OtherTurn(current_player_name.clone())
+                        continue;
                     };
-                    self.send(*addr, ServerMessage::PlayerTurn(turn_msg)).await;
+
+                    let opponents: Vec<go_fish_web::OpponentState> = player_addrs_names.iter()
+                        .filter(|(_, other_name)| other_name != name)
+                        .filter_map(|(_, other_name)| {
+                            let other_id = session.name_to_id[other_name];
+                            if let Some(p) = game_players.iter().find(|p| p.id == other_id) {
+                                Some(go_fish_web::OpponentState {
+                                    name: other_name.clone(),
+                                    card_count: p.hand.books.iter().map(|b| b.cards.len()).sum(),
+                                    completed_book_count: p.completed_books.len(),
+                                })
+                            } else if let Some(p) = inactive_players.iter().find(|p| p.id == other_id) {
+                                Some(go_fish_web::OpponentState {
+                                    name: other_name.clone(),
+                                    card_count: 0,
+                                    completed_book_count: p.completed_books.len(),
+                                })
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+
+                    let snapshot = go_fish_web::GameSnapshot {
+                        hand_state,
+                        opponents,
+                        active_player: current_player_name.clone(),
+                        last_hook_outcome: Some(hook_outcome.clone()),
+                    };
+                    self.send(*addr, ServerMessage::GameSnapshot(snapshot)).await;
                 }
 
                 // If game is finished, end the session
@@ -759,18 +775,31 @@ impl LobbyManager {
             self.send(*addr, ServerMessage::PlayerIdentity(name.clone())).await;
 
             if let Some(gf_player) = gf_player {
-                self.send(*addr, ServerMessage::HandState(go_fish_web::HandState {
-                    hand: gf_player.hand.clone(),
-                    completed_books: gf_player.completed_books.clone(),
-                })).await;
-            }
+                // Build opponents list: all other players
+                let opponents: Vec<go_fish_web::OpponentState> = player_data.iter()
+                    .filter(|(_, other_name, _)| other_name != name)
+                    .filter_map(|(_, other_name, other_id)| {
+                        game_players.iter().find(|p| p.id == *other_id).map(|p| {
+                            go_fish_web::OpponentState {
+                                name: other_name.clone(),
+                                card_count: p.hand.books.iter().map(|b| b.cards.len()).sum(),
+                                completed_book_count: p.completed_books.len(),
+                            }
+                        })
+                    })
+                    .collect();
 
-            let turn_msg = if name == &current_name {
-                go_fish_web::PlayerTurnValue::YourTurn
-            } else {
-                go_fish_web::PlayerTurnValue::OtherTurn(current_name.clone())
-            };
-            self.send(*addr, ServerMessage::PlayerTurn(turn_msg)).await;
+                let snapshot = go_fish_web::GameSnapshot {
+                    hand_state: go_fish_web::HandState {
+                        hand: gf_player.hand.clone(),
+                        completed_books: gf_player.completed_books.clone(),
+                    },
+                    opponents,
+                    active_player: current_name.clone(),
+                    last_hook_outcome: None,
+                };
+                self.send(*addr, ServerMessage::GameSnapshot(snapshot)).await;
+            }
         }
 
         info!(lobby_id = %lobby_id, player_count = player_addrs.len(), "game session started");
@@ -1172,8 +1201,8 @@ mod tests {
             address: addr_b,
             message: ClientMessage::JoinLobby(lobby_id.clone()),
         }).await.unwrap();
-        // Drain LobbyJoined (B), LobbyUpdated (A), and all game-start messages (8 total)
-        for _ in 0..10 {
+        // Drain LobbyJoined (B), LobbyUpdated (A), and all game-start messages (6 total)
+        for _ in 0..8 {
             timeout(Duration::from_secs(2), outbound_rx.recv())
                 .await.expect("timed out").expect("channel closed");
         }
@@ -1226,9 +1255,9 @@ mod tests {
             message: ClientMessage::JoinLobby(lobby_id.clone()),
         }).await.unwrap();
 
-        // Collect all messages: LobbyJoined(B), LobbyUpdated(A), and 8 game-start messages
+        // Collect all messages: LobbyJoined(B), LobbyUpdated(A), and 6 game-start messages
         let mut got_lobby_joined = false;
-        for _ in 0..10 {
+        for _ in 0..8 {
             let msg = timeout(Duration::from_secs(2), outbound_rx.recv())
                 .await.expect("timed out").expect("channel closed");
             if msg.address == addr_b && matches!(msg.message, ServerMessage::LobbyJoined { .. }) {
@@ -1517,9 +1546,18 @@ mod tests {
             message: ClientMessage::LeaveLobby,
         }).await.unwrap();
 
-        // No LobbyUpdated should be sent — verify by checking no message arrives
-        let result = timeout(Duration::from_millis(200), outbound_rx.recv()).await;
-        assert!(result.is_err(), "expected no message after last player leaves, but got one");
+        // LeaveLobby should be sent, but not LobbyUpdate
+        let msg = timeout(Duration::from_millis(200), outbound_rx.recv())
+            .await.expect("timed out").expect("channel closed");;
+        match msg.message {
+            ServerMessage::LobbyLeft(reason) => {
+                match reason {
+                    LobbyLeftReason::RequestedByPlayer => {},
+                    reason => panic!("unexpected reason for leaving lobby: {:?}", reason),
+                }
+            }
+            other => panic!("expected LobbyLeft, got {:?}", other),
+        }
 
         cmd_tx.send(LobbyCommand::Shutdown).await.unwrap();
     }
@@ -1852,9 +1890,9 @@ mod tests {
             message: ClientMessage::StartGame,
         }).await.unwrap();
 
-        // Collect 8 messages: for each of A and B: GameStarted, PlayerIdentity, HandState, PlayerTurn
+        // Collect 6 messages: for each of A and B: GameStarted, PlayerIdentity, GameSnapshot
         let mut msgs: Vec<LobbyOutboundMessage> = Vec::new();
-        for _ in 0..8 {
+        for _ in 0..6 {
             let msg = timeout(Duration::from_secs(2), outbound_rx.recv())
                 .await.expect("timed out waiting for game start messages")
                 .expect("channel closed");
@@ -1866,15 +1904,13 @@ mod tests {
                 .filter(|m| m.address == player_addr)
                 .map(|m| &m.message)
                 .collect();
-            assert_eq!(player_msgs.len(), 4, "each player should receive 4 messages");
+            assert_eq!(player_msgs.len(), 3, "each player should receive 3 messages");
             assert!(player_msgs.iter().any(|m| matches!(m, ServerMessage::GameStarted)),
                 "player {:?} should receive GameStarted", player_addr);
             assert!(player_msgs.iter().any(|m| matches!(m, ServerMessage::PlayerIdentity(_))),
                 "player {:?} should receive PlayerIdentity", player_addr);
-            assert!(player_msgs.iter().any(|m| matches!(m, ServerMessage::HandState(_))),
-                "player {:?} should receive HandState", player_addr);
-            assert!(player_msgs.iter().any(|m| matches!(m, ServerMessage::PlayerTurn(_))),
-                "player {:?} should receive PlayerTurn", player_addr);
+            assert!(player_msgs.iter().any(|m| matches!(m, ServerMessage::GameSnapshot(_))),
+                    "player {:?} should receive GameSnapshot", player_addr);
         }
 
         cmd_tx.send(LobbyCommand::Shutdown).await.unwrap();
@@ -1910,9 +1946,9 @@ mod tests {
         }).await.unwrap();
 
         // Collect all messages: LobbyJoined(B), LobbyUpdated(A), then game start messages
-        // Total: 2 (lobby) + 8 (game: 4 per player) = 10
+        // Total: 2 (lobby) + 6 (game: 3 per player) = 8
         let mut msgs: Vec<LobbyOutboundMessage> = Vec::new();
-        for _ in 0..10 {
+        for _ in 0..8 {
             let msg = timeout(Duration::from_secs(2), outbound_rx.recv())
                 .await.expect("timed out waiting for auto-start messages")
                 .expect("channel closed");
@@ -1955,30 +1991,37 @@ mod tests {
             message: ClientMessage::JoinLobby(lobby_id),
         }).await.unwrap();
 
-        // Drain all startup messages: LobbyJoined(B), LobbyUpdated(A), then 8 game-start messages
+        // Drain all startup messages: LobbyJoined(B), LobbyUpdated(A), then 6 game-start messages
         let mut whose_turn: Option<SocketAddr> = None;
         let mut hand_state_a: Option<go_fish_web::HandState> = None;
         let mut hand_state_b: Option<go_fish_web::HandState> = None;
-        for _ in 0..10 {
+        for _ in 0..8 {
             let msg = timeout(Duration::from_secs(2), outbound_rx.recv())
                 .await.expect("timed out draining startup").expect("channel closed");
             match &msg.message {
-                ServerMessage::PlayerTurn(go_fish_web::PlayerTurnValue::YourTurn) => {
-                    whose_turn = Some(msg.address);
+                ServerMessage::GameSnapshot(snapshot) if msg.address == addr_a => {
+                    if whose_turn.is_none() && snapshot.active_player == name_a {
+                        whose_turn = Some(addr_a);
+                    } else if whose_turn.is_none() {
+                        whose_turn = Some(addr_b);
+                    }
+                    hand_state_a = Some(snapshot.hand_state.clone());
                 }
-                ServerMessage::HandState(hs) if msg.address == addr_a => {
-                    hand_state_a = Some(hs.clone());
-                }
-                ServerMessage::HandState(hs) if msg.address == addr_b => {
-                    hand_state_b = Some(hs.clone());
+                ServerMessage::GameSnapshot(snapshot) if msg.address == addr_b => {
+                    if whose_turn.is_none() && snapshot.active_player == name_b {
+                        whose_turn = Some(addr_b);
+                    } else if whose_turn.is_none() {
+                        whose_turn = Some(addr_a);
+                    }
+                    hand_state_b = Some(snapshot.hand_state.clone());
                 }
                 _ => {}
             }
         }
 
-        let whose_turn = whose_turn.expect("should have received YourTurn");
-        let hand_state_a = hand_state_a.expect("should have received HandState for A");
-        let hand_state_b = hand_state_b.expect("should have received HandState for B");
+        let whose_turn = whose_turn.expect("should have determined whose turn it is");
+        let hand_state_a = hand_state_a.expect("should have received GameSnapshot for A");
+        let hand_state_b = hand_state_b.expect("should have received GameSnapshot for B");
 
         (name_a, name_b, whose_turn, hand_state_a, hand_state_b)
     }
@@ -2192,9 +2235,9 @@ mod tests {
             }),
         }).await.unwrap();
 
-        // Collect messages: 2 HookAndResult + 2 HandState + 2 PlayerTurn = 6 messages
+        // Collect messages: 1 GameSnapshot per player = 2 messages
         let mut msgs: Vec<LobbyOutboundMessage> = Vec::new();
-        for _ in 0..6 {
+        for _ in 0..2 {
             let msg = timeout(Duration::from_secs(2), outbound_rx.recv())
                 .await.expect("timed out waiting for hook result messages")
                 .expect("channel closed");
@@ -2206,13 +2249,9 @@ mod tests {
                 .filter(|m| m.address == player_addr)
                 .map(|m| &m.message)
                 .collect();
-            assert_eq!(player_msgs.len(), 3, "each player should receive 3 messages after hook");
-            assert!(player_msgs.iter().any(|m| matches!(m, ServerMessage::HookAndResult(_))),
-                "player {:?} should receive HookAndResult", player_addr);
-            assert!(player_msgs.iter().any(|m| matches!(m, ServerMessage::HandState(_))),
-                "player {:?} should receive HandState", player_addr);
-            assert!(player_msgs.iter().any(|m| matches!(m, ServerMessage::PlayerTurn(_))),
-                "player {:?} should receive PlayerTurn", player_addr);
+            assert_eq!(player_msgs.len(), 1, "each player should receive 1 message after hook");
+            assert!(player_msgs.iter().any(|m| matches!(m, ServerMessage::GameSnapshot(_))),
+                    "player {:?} should receive GameSnapshot", player_addr);
         }
 
         cmd_tx.send(LobbyCommand::Shutdown).await.unwrap();
@@ -2281,7 +2320,7 @@ mod tests {
                     );
                 }
 
-                // Assert: lobby 1 players DO receive messages (HookAndResult, HandState, PlayerTurn)
+                // Assert: lobby 1 players DO receive messages (GameSnapshot)
                 let lobby1_msgs: Vec<_> = messages.iter()
                     .filter(|m| m.address == addr_l1_a || m.address == addr_l1_b)
                     .collect();
@@ -2322,8 +2361,8 @@ mod tests {
             message: ClientMessage::JoinLobby(lobby_id.clone()),
         }).await.unwrap();
 
-        // Drain all auto-start messages (2 lobby + 8 game = 10)
-        for _ in 0..10 {
+        // Drain all auto-start messages (2 lobby + 6 game = 8)
+        for _ in 0..8 {
             timeout(Duration::from_secs(2), outbound_rx.recv())
                 .await.expect("timed out draining auto-start messages")
                 .expect("channel closed");

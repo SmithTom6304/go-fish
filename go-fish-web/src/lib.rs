@@ -33,10 +33,11 @@ pub enum ServerMessage {
     },
     LobbyLeft(LobbyLeftReason),
     GameStarted,
+    GameSnapshot(GameSnapshot),
     Error(String),
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub enum HookError {
     NotYourTurn,
     UnknownPlayer(String),
@@ -84,4 +85,27 @@ pub struct GameResult {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum LobbyLeftReason {
     RequestedByPlayer
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct HookOutcome {
+    pub fisher_name: String,
+    pub target_name: String,
+    pub rank: Rank,
+    pub result: HookResult,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct OpponentState {
+    pub name: String,
+    pub card_count: usize,
+    pub completed_book_count: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct GameSnapshot {
+    pub hand_state: HandState,
+    pub opponents: Vec<OpponentState>,
+    pub active_player: String,
+    pub last_hook_outcome: Option<HookOutcome>,
 }

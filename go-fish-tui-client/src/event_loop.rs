@@ -8,7 +8,7 @@ use tokio::sync::mpsc::error::TryRecvError;
 use go_fish_web::ClientMessage;
 
 use crate::network::NetworkEvent;
-use crate::state::{apply_network_event, is_valid_lobby_id, AppState, PreLobbyInputLobbyIdState, Screen};
+use crate::state::{apply_network_event, is_valid_lobby_id, AppState, GameInputState, PreLobbyInputLobbyIdState, Screen};
 use crate::ui::render;
 
 pub async fn run_event_loop<B: Backend>(
@@ -45,6 +45,7 @@ where
                         if let Screen::Lobby(_) = &state.screen {
                             let _ = client_msg_tx.send(ClientMessage::LeaveLobby).await;
                         }
+                        // Game screen: do NOT send LeaveLobby (server handles disconnection)
                         break;
                     }
 
@@ -90,12 +91,127 @@ where
                                 }
                             }
                         }
-                        Screen::Lobby(_) => {
-                            if key.code == KeyCode::Char('q') {
+                        Screen::Lobby(lobby) => {
+                            // Task 7.1: s key sends StartGame if leader with ≥2 players
+                            if key.code == KeyCode::Char('s')
+                                && lobby.players.len() >= 2
+                                && lobby.leader == lobby.player_name
+                            {
+                                let _ = client_msg_tx.send(ClientMessage::StartGame).await;
+                            } else if key.code == KeyCode::Char('q') {
                                 let _ = client_msg_tx.send(ClientMessage::LeaveLobby).await;
                             }
                         }
                         Screen::Connecting(_) => {}
+                        Screen::Game(game) => {
+                            // Task 7.3: game result acknowledgement (checked first)
+                            if game.game_result.is_some() {
+                                if key.code == KeyCode::Enter || key.code == KeyCode::Char(' ') {
+                                    let player_name = game.player_name.clone();
+                                    state.screen = crate::state::Screen::PreLobby(crate::state::PreLobbyState {
+                                        player_name,
+                                        input_state: crate::state::PreLobbyInputState::None,
+                                        error: None,
+                                    });
+                                } else if key.code == KeyCode::Char('q') {
+                                    break;
+                                }
+                            } else {
+                                // Task 7.2: hook input navigation
+                                match &game.input_state {
+                                    GameInputState::Idle => {
+                                        if key.code == KeyCode::Char('q') {
+                                            break;
+                                        }
+                                        let opponents: Vec<String> = game.players.iter()
+                                            .filter(|p| *p != &game.player_name)
+                                            .cloned()
+                                            .collect();
+                                        // Start hook input navigation
+                                        if key.code == KeyCode::Char('h') && opponents.len() > 0 && game.active_player == game.player_name {
+                                            game.input_state = GameInputState::SelectingTarget { cursor: 0 };
+                                        }
+                                    }
+                                    GameInputState::SelectingTarget { cursor } => {
+                                        let opponents: Vec<String> = game.players.iter()
+                                            .filter(|p| *p != &game.player_name)
+                                            .cloned()
+                                            .collect();
+                                        let n = opponents.len();
+                                        if n == 0 { return Ok(()); }
+                                        let cursor = *cursor;
+                                        match key.code {
+                                            KeyCode::Char('j') | KeyCode::Down => {
+                                                game.input_state = GameInputState::SelectingTarget {
+                                                    cursor: (cursor + 1) % n,
+                                                };
+                                            }
+                                            KeyCode::Char('k') | KeyCode::Up => {
+                                                game.input_state = GameInputState::SelectingTarget {
+                                                    cursor: (cursor + n - 1) % n,
+                                                };
+                                            }
+                                            KeyCode::Enter => {
+                                                if game.hand.books.is_empty() {
+                                                    // No cards to ask for — stay in SelectingTarget
+                                                } else {
+                                                    let target = opponents[cursor].clone();
+                                                    game.input_state = GameInputState::SelectingRank {
+                                                        target,
+                                                        cursor: 0,
+                                                    };
+                                                }
+                                            }
+                                            KeyCode::Esc => {
+                                                game.input_state = GameInputState::Idle;
+                                            }
+                                            KeyCode::Char('q') => {
+                                                break;
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                    GameInputState::SelectingRank { target, cursor } => {
+                                        let cards = game.hand.books.iter().flat_map(|b| b.cards.clone()).collect::<Vec<_>>();
+                                        let m = game.hand.books.iter().map(|b| b.cards.len()).sum::<usize>();
+                                        if m == 0 {
+                                            game.input_state = GameInputState::SelectingTarget { cursor: 0 };
+                                        } else {
+                                            let cursor = *cursor;
+                                            let target = target.clone();
+                                            match key.code {
+                                                KeyCode::Char('l') | KeyCode::Right => {
+                                                    game.input_state = GameInputState::SelectingRank {
+                                                        target,
+                                                        cursor: (cursor + 1) % m,
+                                                    };
+                                                }
+                                                KeyCode::Char('h') | KeyCode::Left => {
+                                                    game.input_state = GameInputState::SelectingRank {
+                                                        target,
+                                                        cursor: (cursor + m - 1) % m,
+                                                    };
+                                                }
+                                                KeyCode::Enter => {
+                                                    let rank = cards[cursor].rank;
+                                                    let _ = client_msg_tx.send(ClientMessage::Hook(
+                                                        go_fish_web::ClientHookRequest { target_name: target, rank }
+                                                    )).await;
+                                                    game.input_state = GameInputState::Idle;
+                                                }
+                                                KeyCode::Esc => {
+                                                    game.input_state = GameInputState::SelectingTarget { cursor: 0 };
+                                                }
+                                                KeyCode::Char('q') => {
+                                                    break;
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 Event::Resize(_, _) => {
