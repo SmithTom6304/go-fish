@@ -260,7 +260,7 @@ impl Hand {
             }
         };
 
-        let existing_book = self.books.swap_remove(position);
+        let existing_book = self.books.remove(position);
         let combined_result = existing_book.combine(book);
 
         match combined_result {
@@ -285,7 +285,7 @@ impl Hand {
             Some(pos) => pos,
         };
 
-        let catch = self.books.swap_remove(position);
+        let catch = self.books.remove(position);
         HookResult::Catch(catch)
     }
 }
@@ -491,7 +491,7 @@ impl Game {
         let player_order = self.players.iter().map(|p| p.id).collect::<Vec<PlayerId>>();
 
         for _ in 1..self.players.len() {
-            let current_player = self.players.swap_remove(new_turn);
+            let current_player = self.players.remove(new_turn);
             let result = match current_player.hand.books.is_empty() {
                 true => Self::handle_active_player_has_empty_hand(current_player, &mut self.deck),
                 false => PlayerEmptyHandOutcome::Active(current_player),
@@ -551,11 +551,11 @@ impl Game {
         current_player_index: usize,
         target_id: PlayerId,
     ) -> (Player, Option<Player>) {
-        let fisher = players.swap_remove(current_player_index);
+        let fisher = players.remove(current_player_index);
 
         let target_index = players.iter().position(|p| p.id == target_id);
         let target = match target_index {
-            Some(index) => players.swap_remove(index),
+            Some(index) => players.remove(index),
             None => return (fisher, None),
         };
 
