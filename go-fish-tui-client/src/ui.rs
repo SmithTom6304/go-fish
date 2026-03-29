@@ -8,13 +8,14 @@ use go_fish::Rank;
 use go_fish::Suit;
 use go_fish_web::HookError;
 use go_fish_web::HookOutcome;
+use ratatui::buffer::Buffer;
 use ratatui::layout::{Flex, Rect};
 use ratatui::prelude::Stylize;
 use ratatui::style::Modifier;
 use ratatui::text::Line;
 use ratatui::text::Span;
-use ratatui::widgets::Clear;
 use ratatui::widgets::Padding;
+use ratatui::widgets::{Clear, Widget};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout},
     style::{Color, Style},
@@ -259,32 +260,22 @@ pub fn render(f: &mut Frame, app: &AppState) {
     }
 }
 
-/// Render a single face-up card as a 5×4 ratatui Block widget.
-/// Red suits (Hearts, Diamonds) use Color::Red; black suits use Color::White.
-fn render_card(f: &mut Frame, card: &Card, area: Rect, highlighted: bool) {
-    let col = suit_colour(card.suit);
-    let suit_symbol = suit_symbol(card.suit);
-    let rank_symbol = rank_short(card.rank);
-    let card_text = format!("{}{}", suit_symbol, rank_symbol);
-    let card_style = match highlighted {
-        true => Style::default().yellow(),
-        false => Style::default().fg(col),
-    };
-    let card_block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(card_style)
-        .title(card_text.clone());
-
-    f.render_widget(card_block, area);
+fn render_card_border(f: &mut Frame, area: Rect, highlighted: bool) {
+    let rect = Rect::new(area.x, area.y, 7, 5);
+    let col = if highlighted { Color::Yellow } else { Color::White };
+    let block = Block::default().borders(Borders::ALL).style(Style::default().fg(col));
+    f.render_widget(block, rect);
 }
 
-/// Render a face-down card (back pattern ░░░).
-fn render_card_back(f: &mut Frame, area: Rect) {
-    let card_block = Block::default()
-        .borders(Borders::ALL)
-        .style(Style::default().fg(Color::White))
-        .title("░░░");
-    f.render_widget(card_block, area);
+fn render_card_interior(f: &mut Frame, area: Rect, card: &Card) {
+    let buf = f.buffer_mut();
+    let suit_symbol = suit_symbol(card.suit);
+    let suit_col = suit_colour(card.suit);
+    let rank = rank_short(card.rank);
+
+    buf.set_string(area.x + 2, area.y + 1, suit_symbol, Style::default().fg(suit_col));
+    buf.set_string(area.x + 3, area.y + 2, rank, Style::default().fg(Color::White));
+    buf.set_string(area.x + 4, area.y + 3, suit_symbol, Style::default().fg(suit_col));
 }
 
 fn render_local_player_strip(f: &mut Frame, game_state: &GameState, area: Rect) {
@@ -305,13 +296,7 @@ fn render_local_player_strip(f: &mut Frame, game_state: &GameState, area: Rect) 
     let hand_block = Block::default()
         .borders(Borders::ALL)
         .border_style(border_style)
-        .title("Your Hand");
-
-
-    let cards_block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(border_style)
-        .title(format!("Cards"));
+        .title("you");
 
     let strip_chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -326,14 +311,15 @@ fn render_local_player_strip(f: &mut Frame, game_state: &GameState, area: Rect) 
         .split(strip_chunks[1]);
 
     // Render name
-    let name = Line::from(vec![Span::styled(name, Style::new().green())]);
-    f.render_widget(name, strip_chunks[0]);
+    // let name = Line::from(vec![Span::styled(name, Style::new().green())]);
+    // f.render_widget(name, strip_chunks[0]);
 
     // Render cards
     //f.render_widget(cards_block, strip_chunks[1]);
     for (i, card) in cards.iter().enumerate() {
         let h = selected_card.map(|j| j == i).unwrap_or(false);
-        render_card(f, card, cards_chunks[i], h);
+        render_card_border(f, cards_chunks[i], h);
+        render_card_interior(f, cards_chunks[i], card);
     }
 
     // Render completed books
@@ -351,11 +337,7 @@ fn render_opponent_player_strip(f: &mut Frame, name: &str, hand_size: usize, boo
     let hand_block = Block::default()
         .borders(Borders::ALL)
         .style(strip_border)
-        .title("Opponent's Hand");
-
-    let cards_block = Block::default()
-        .borders(Borders::ALL)
-        .title(format!("{} cards", hand_size));
+        .title(name);
 
     let strip_chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -369,13 +351,13 @@ fn render_opponent_player_strip(f: &mut Frame, name: &str, hand_size: usize, boo
         .split(strip_chunks[1]);
 
     // Render name
-    let name = Line::from(vec![Span::styled(name, Style::default().fg(Color::White))]);
-    f.render_widget(name, strip_chunks[0]);
+    // let name = Line::from(vec![Span::styled(name, Style::default().fg(Color::White))]);
+    // f.render_widget(name, strip_chunks[0]);
 
     // Render cards
     //f.render_widget(cards_block, strip_chunks[1]);
     for i in 0..hand_size {
-        render_card_back(f, cards_chunks[i]);
+        render_card_border(f, cards_chunks[i], false);
     }
 
     // Render completed books
@@ -427,29 +409,38 @@ fn suit_colour(suit: Suit) -> Color {
     }
 }
 
-fn status_message(game_state: &GameState) -> String {
+fn status_message(game_state: &'_ GameState) -> Line<'_> {
     if let Some(outcome) = &game_state.latest_hook_outcome {
-        return hook_outcome_message(outcome);
+        return hook_outcome_message(outcome, game_state.player_name.clone());
     }
-    "Game started!".to_string()
+    Line::styled("Game started!".to_string(), Style::default())
 }
 
-fn hook_outcome_message(outcome: &HookOutcome) -> String {
+fn hook_outcome_message<'a>(outcome: &HookOutcome, local_name: String) -> Line<'a> {
     let rank = rank_short(outcome.rank);
     match &outcome.result {
-        HookResult::Catch(book) => format!(
-            "{} asked {} for {}s — Caught {}!",
-            outcome.fisher_name,
-            outcome.target_name,
-            rank,
-            book.cards.len()
-        ),
-        HookResult::GoFish => format!(
-            "{} asked {} for {}s — Go Fish!",
-            outcome.fisher_name,
-            outcome.target_name,
-            rank
-        ),
+        HookResult::Catch(book) => {
+            Line::from(vec![
+                format_name(outcome.fisher_name.clone(), local_name.clone()),
+                " asked ".into(),
+                format_name(outcome.target_name.clone(), local_name),
+                " for ".into(),
+                rank.into(),
+                " — Caught ".into(),
+                book.cards.len().to_string().into(),
+                " cards!".into(),
+            ])
+        },
+        HookResult::GoFish => {
+            Line::from(vec![
+                format_name(outcome.fisher_name.clone(), local_name.clone()),
+                " asked ".into(),
+                format_name(outcome.target_name.clone(), local_name),
+                " for ".into(),
+                rank.into(),
+                " — Go Fish!".into(),
+            ])
+        }
     }
 }
 
@@ -468,6 +459,13 @@ fn strip_order<'a>(players: &'a [String], local: &str) -> Vec<&'a String> {
     (1..n).map(|i| &players[(idx + i) % n])
         .chain(std::iter::once(&players[idx]))
         .collect()
+}
+
+fn format_name<'a>(name: String, local_name: String) -> Span<'a> {
+    match name == local_name {
+        true => Span::styled("you", Style::new().green()),
+        false => Span::styled(name, Style::default()),
+    }
 }
 
 fn opponents(game: &GameState) -> Vec<&String> {
