@@ -699,44 +699,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "go-fish"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "32e9025b7201c09758490322359ecd2084006ad9ca7b9817a0a9b81b01a00c57"
-dependencies = [
- "enum-iterator",
- "rand 0.9.2",
- "serde",
- "serde_json",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "go-fish-cli-client"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "futures-util",
- "go-fish 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)",
- "go-fish-web",
- "serde_json",
- "tokio",
- "tokio-tungstenite 0.28.0",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "go-fish-game-server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
  "futures-util",
- "go-fish 0.1.2",
+ "go-fish",
  "go-fish-web",
  "opentelemetry",
  "opentelemetry-otlp",
@@ -763,7 +732,7 @@ dependencies = [
  "clap",
  "crossterm 0.28.1",
  "futures-util",
- "go-fish 0.1.2",
+ "go-fish",
  "go-fish-web",
  "proptest",
  "ratatui",
@@ -781,7 +750,7 @@ dependencies = [
  "anyhow",
  "clap",
  "futures-util",
- "go-fish 0.1.2",
+ "go-fish",
  "serde",
  "serde_json",
  "tokio",
