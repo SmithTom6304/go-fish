@@ -177,8 +177,8 @@ where
                                         }
                                     }
                                     GameInputState::SelectingRank { target, cursor } => {
-                                        let cards = game.hand.books.iter().flat_map(|b| b.cards.clone()).collect::<Vec<_>>();
-                                        let m = game.hand.books.iter().map(|b| b.cards.len()).sum::<usize>();
+                                        let books = &game.hand.books;
+                                        let m = game.hand.books.len();
                                         if m == 0 {
                                             game.input_state = GameInputState::SelectingTarget { cursor: 0 };
                                         } else {
@@ -198,7 +198,7 @@ where
                                                     };
                                                 }
                                                 KeyCode::Enter => {
-                                                    let rank = cards[cursor].rank;
+                                                    let rank = books[cursor].rank;
                                                     let _ = client_msg_tx.send(ClientMessage::Hook(
                                                         go_fish_web::ClientHookRequest { target_name: target, rank }
                                                     )).await;

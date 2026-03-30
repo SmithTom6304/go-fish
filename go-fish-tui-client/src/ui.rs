@@ -2,10 +2,10 @@ use crate::state::PreLobbyInputState;
 use crate::state::{AppState, ConnectingState, LobbyState, PreLobbyState, Screen};
 use crate::state::{GameInputState, GameState};
 use futures_util::future::err;
-use go_fish::Card;
 use go_fish::HookResult;
 use go_fish::Rank;
 use go_fish::Suit;
+use go_fish::{Card, IncompleteBook};
 use go_fish_web::HookError;
 use go_fish_web::HookOutcome;
 use ratatui::buffer::Buffer;
@@ -278,6 +278,15 @@ fn render_card_interior(f: &mut Frame, area: Rect, card: &Card) {
     buf.set_string(area.x + 4, area.y + 3, suit_symbol, Style::default().fg(suit_col));
 }
 
+fn render_book(f: &mut Frame, area: Rect, book: &IncompleteBook, highlighted: bool) {
+    for (i, card) in book.cards.iter().enumerate() {
+        let rect = Rect::new(area.x + (i as u16), area.y, 7, 5);
+        f.render_widget(Clear, rect);
+        render_card_border(f, rect, highlighted);
+        render_card_interior(f, rect, card);
+    }
+}
+
 fn render_local_player_strip(f: &mut Frame, game_state: &GameState, area: Rect) {
     let name = &game_state.player_name;
     let hand = &game_state.hand;
@@ -303,8 +312,7 @@ fn render_local_player_strip(f: &mut Frame, game_state: &GameState, area: Rect) 
         .constraints([Constraint::Length(7), Constraint::Fill(1), Constraint::Length(14)])
         .split(hand_block.inner(area));
 
-    let cards = hand.books.iter().flat_map(|b| &b.cards).collect::<Vec<_>>();
-    let con = (0..cards.len()).map(|_| Constraint::Length(7)).collect::<Vec<_>>();
+    let con = hand.books.iter().map(|book| Constraint::Length(6 + (book.cards.len()) as u16)).collect::<Vec<_>>();
     let cards_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints(con)
@@ -316,10 +324,9 @@ fn render_local_player_strip(f: &mut Frame, game_state: &GameState, area: Rect) 
 
     // Render cards
     //f.render_widget(cards_block, strip_chunks[1]);
-    for (i, card) in cards.iter().enumerate() {
+    for (i, book) in hand.books.iter().enumerate() {
         let h = selected_card.map(|j| j == i).unwrap_or(false);
-        render_card_border(f, cards_chunks[i], h);
-        render_card_interior(f, cards_chunks[i], card);
+        render_book(f, cards_chunks[i], book, h);
     }
 
     // Render completed books
