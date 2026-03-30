@@ -206,6 +206,7 @@ fn apply_server_message(state: &mut AppState, msg: &ServerMessage) {
         ServerMessage::GameSnapshot(snapshot) => {
             if let Screen::Game(game) = &mut state.screen {
                 game.hand = snapshot.hand_state.hand.clone();
+                game.hand.books.sort_by(|a, b| a.rank.cmp(&b.rank));
                 game.completed_books = snapshot.hand_state.completed_books.clone();
                 for opp in &snapshot.opponents {
                     game.opponent_card_counts.insert(opp.name.clone(), opp.card_count);
