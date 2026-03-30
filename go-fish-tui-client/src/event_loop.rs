@@ -129,7 +129,12 @@ where
                                             .collect();
                                         // Start hook input navigation
                                         if key.code == KeyCode::Char('h') && opponents.len() > 0 && game.active_player == game.player_name {
-                                            game.input_state = GameInputState::SelectingTarget { cursor: 0 };
+                                            game.input_state = if opponents.len() == 1 {
+                                                // If only 1 opponent, can skip select target stage
+                                                GameInputState::SelectingRank { target: opponents[0].clone(), cursor: 0 }
+                                            } else {
+                                                GameInputState::SelectingTarget { cursor: 0 }
+                                            }
                                         }
                                     }
                                     GameInputState::SelectingTarget { cursor } => {
