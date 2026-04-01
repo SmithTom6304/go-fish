@@ -1,6 +1,29 @@
 //! # go-fish
 //!
-//! `go-fish` is a library providing core functionality for the classic [Go Fish card game](https://en.wikipedia.org/wiki/Go_Fish).
+//! `go-fish` is a library providing core engine functionality for the classic [Go Fish card game](https://en.wikipedia.org/wiki/Go_Fish).
+//!
+//! It provides types for cards, decks, and players, and manages the game logic including turns, drawing, and completing books.
+//!
+//! ## Example
+//!
+//! ```rust
+//! use go_fish::{Game, Deck, Hook, PlayerId, Rank};
+//!
+//! // Initialize a new game with 3 players
+//! let deck = Deck::new().shuffle();
+//! let mut game = Game::new(deck, 3);
+//!
+//! // Current player takes a turn
+//! let hook = Hook {
+//!     target: PlayerId(1),
+//!     rank: Rank::Ace,
+//! };
+//!
+//! match game.take_turn(hook) {
+//!     Ok(result) => println!("Turn result: {:?}", result),
+//!     Err(e) => eprintln!("Error: {:?}", e),
+//! }
+//! ```
 
 use enum_iterator::{all, Sequence};
 use rand::prelude::SliceRandom;
