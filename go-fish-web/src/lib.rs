@@ -1,8 +1,13 @@
+//! # go-fish-web
+//! 
+//! `go-fish-web` provides the protocol message types used by the `go-fish` web client and server.
+
 use go_fish::Rank;
 use go_fish::{CompleteBook, Hand, HookResult};
 use serde::Deserialize;
 use serde::Serialize;
 
+/// Messages sent from the client to the server.
 #[derive(Debug, Serialize, Deserialize)]
 pub enum ClientMessage {
     Hook(ClientHookRequest),
@@ -13,6 +18,7 @@ pub enum ClientMessage {
     StartGame,
 }
 
+/// Messages sent from the server to the client.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum ServerMessage {
     HookAndResult(HookAndResult),
