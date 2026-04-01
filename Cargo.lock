@@ -747,17 +747,9 @@ dependencies = [
 name = "go-fish-web"
 version = "0.1.0"
 dependencies = [
- "anyhow",
- "clap",
- "futures-util",
  "go-fish",
  "serde",
  "serde_json",
- "tokio",
- "tokio-tungstenite 0.28.0",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

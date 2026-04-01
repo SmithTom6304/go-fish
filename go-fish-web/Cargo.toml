@@ -7,11 +7,3 @@ edition = "2024"
 go-fish = { path = "../go-fish" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-anyhow = "1.0.102"
-futures-util = "0.3.32"
-tokio = { version = "1.49.0", features = ["rt", "macros", "rt-multi-thread", "sync", "time"] }
-tokio-tungstenite = "0.28.0"
-tokio-util = "0.7.18"
-tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.22", features = ["default", "env-filter"] }
-clap = { version = "4.5.60", features = ["derive"] }
