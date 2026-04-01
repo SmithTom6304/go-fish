@@ -152,10 +152,11 @@ impl Deck {
         Deck { cards }
     }
 
-    /// Shuffles the remaining cards
-    pub fn shuffle(&mut self) {
+    /// Shuffles the remaining cards and returns the deck
+    pub fn shuffle(mut self) -> Self {
         let mut rng = rand::rng();
         self.cards.shuffle(&mut rng);
+        self
     }
 
     pub fn is_empty(&self) -> bool {
