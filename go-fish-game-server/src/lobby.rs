@@ -707,8 +707,7 @@ impl LobbyManager {
         let player_addrs: Vec<SocketAddr> = lobby.players.clone();
         let player_count = player_addrs.len() as u8;
 
-        let mut deck = go_fish::Deck::new();
-        deck.shuffle();
+        let deck = go_fish::Deck::new().shuffle();
         let game = go_fish::Game::new(deck, player_count);
 
         let mut id_to_name: HashMap<go_fish::PlayerId, String> = HashMap::new();
