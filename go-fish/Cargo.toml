@@ -1,12 +1,15 @@
 [package]
 name = "go-fish"
-description = "The classic Go Fish card game"
+description = "A core engine for the classic Go Fish card game, providing game logic, deck management, and player interactions."
 readme = "../README.md"
 license = "MIT"
 version = "0.1.2"
 edition = "2024"
+rust-version = "1.85.0"
 repository = "https://github.com/SmithTom6304/go-fish"
 documentation = "https://docs.rs/go-fish"
+keywords = ["game", "cards", "go-fish", "engine"]
+categories = ["games"]
 
 [dependencies]
 enum-iterator = "2.3.0"
