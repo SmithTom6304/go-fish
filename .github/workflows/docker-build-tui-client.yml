@@ -1,4 +1,4 @@
-name: build tui client
+name: build tui client web app
 on:
   workflow_dispatch:
     inputs:

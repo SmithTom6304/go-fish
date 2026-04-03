@@ -1,4 +1,4 @@
-name: build
+name: build game server
 on:
   workflow_dispatch:
     inputs:
