@@ -92,6 +92,7 @@ mod wasm {
     use ratatui::Terminal;
     use ratzilla::{DomBackend, WebRenderer};
     use tokio::sync::mpsc;
+    use wasm_bindgen::prelude::wasm_bindgen;
     use wasm_bindgen_futures::spawn_local;
 
     use go_fish_web::ClientMessage;
@@ -100,6 +101,10 @@ mod wasm {
     use crate::network::NetworkEvent;
     use crate::state::{apply_network_event, AppState, Screen};
     use crate::ui::render;
+
+    #[cfg(target_arch = "wasm32")]
+    #[wasm_bindgen]
+    extern "C" {}
 
     pub fn run(server_url: &str) {
         let ws = WebSocket::open(server_url).expect("failed to connect to server");
