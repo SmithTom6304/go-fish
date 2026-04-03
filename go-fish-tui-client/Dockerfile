@@ -34,4 +34,3 @@ RUN trunk build --release --locked
 # --- Runtime ---
 FROM nginx:alpine AS runtime
 COPY --from=builder /app/dist /usr/share/nginx/html
-COPY build/config.toml /usr/share/nginx/html

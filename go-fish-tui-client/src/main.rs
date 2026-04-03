@@ -12,7 +12,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            server_url: "ws://127.0.0.1:9001".to_string(),
+            server_url: "ws://terminaltom.com/go-fish/game-server".to_string(),
         }
     }
 }
@@ -189,26 +189,8 @@ mod wasm {
 }
 
 #[cfg(target_arch = "wasm32")]
-use std::fs;
-#[cfg(target_arch = "wasm32")]
 fn main() {
-    let config = match fs::read_to_string("config.toml") {
-        Ok(contents) => match toml::from_str::<Config>(&contents) {
-            Ok(cfg) => cfg,
-            Err(e) => {
-                eprintln!("Warning: failed to parse config.toml: {}, using defaults", e);
-                Config::default()
-            }
-        },
-        Err(e) => {
-            eprintln!("Warning: failed to read config.toml: {}, using defaults", e);
-            Config::default()
-        }
-    };
-
-    if !config.server_url.starts_with("ws://") && !config.server_url.starts_with("wss://") {
-        eprintln!("Error: server URL must start with ws:// or wss://");
-        std::process::exit(1);
-    }
-    wasm::run(&config.server_url);
+    // cannot use config, fs is stubbed out for wasm
+    // configurable server url would require fetching via http
+    wasm::run("ws://terminaltom.com/go-fish/game-server");
 }
