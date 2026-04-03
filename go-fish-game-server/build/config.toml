@@ -1,2 +1,2 @@
-address = "0.0.0.0:9001"
+address = "0.0.0.0:80"
 lobby_max_players = 4
