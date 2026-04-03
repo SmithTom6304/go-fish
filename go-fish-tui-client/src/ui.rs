@@ -1,7 +1,6 @@
 use crate::state::PreLobbyInputState;
 use crate::state::{AppState, ConnectingState, LobbyState, PreLobbyState, Screen};
 use crate::state::{GameInputState, GameState};
-use futures_util::future::err;
 use go_fish::HookResult;
 use go_fish::Rank;
 use go_fish::Suit;

@@ -1,0 +1,7 @@
+[build]
+target = "index.html"
+dist = "dist"
+
+[[proxy]]
+rewrite = "/ws"
+backend = "ws://127.0.0.1:9001"
