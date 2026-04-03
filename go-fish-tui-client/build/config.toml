@@ -1,1 +1,1 @@
-address = "ws://127.0.0.1:80"
+address = "ws://ec2-52-56-254-174.eu-west-2.compute.amazonaws.com/go-fish/game-server"
