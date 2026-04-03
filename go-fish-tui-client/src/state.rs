@@ -7,19 +7,6 @@ use go_fish_web::ServerMessage;
 pub use crate::network::NetworkEvent;
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Config {
-    pub server_url: String,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Config {
-            server_url: "ws://127.0.0.1:9001".to_string(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
 pub struct ConnectingState {
     pub status: String,
 }
