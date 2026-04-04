@@ -18,6 +18,7 @@ pub use lobby::{
 pub struct Config {
     pub address: SocketAddr,
     pub lobby_max_players: usize,
+    pub max_client_connections: usize,
 }
 
 impl Default for Config {
@@ -25,6 +26,7 @@ impl Default for Config {
         Config {
             address: "127.0.0.1:9001".parse().unwrap(),
             lobby_max_players: 4,
+            max_client_connections: 10,
         }
     }
 }
@@ -34,7 +36,7 @@ pub async fn run(config: Config) -> Result<(), anyhow::Error> {
     let (lobby_outbound_tx, lobby_outbound_rx) = mpsc::channel::<LobbyOutboundMessage>(64);
     let (lobby_cmd_tx, lobby_cmd_rx) = mpsc::channel::<LobbyCommand>(8);
 
-    let manager = ConnectionManager::new(lobby_event_tx, lobby_outbound_rx);
+    let manager = ConnectionManager::new(lobby_event_tx, lobby_outbound_rx, config.max_client_connections);
     let event_tx = manager.event_tx();
     let command_tx = manager.command_tx();
 

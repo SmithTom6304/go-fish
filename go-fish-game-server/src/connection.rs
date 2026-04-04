@@ -143,6 +143,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     clients: HashMap<SocketAddr, ClientHandle>,
+    max_client_connections: usize,
     event_rx: mpsc::Receiver<ClientEvent<S>>,
     event_tx: mpsc::Sender<ClientEvent<S>>,
     command_rx: mpsc::Receiver<ManagerCommand>,
@@ -158,11 +159,13 @@ where
     pub fn new(
         lobby_tx: mpsc::Sender<LobbyEvent>,
         lobby_outbound_rx: mpsc::Receiver<LobbyOutboundMessage>,
+        max_client_connections: usize,
     ) -> Self {
         let (event_tx, event_rx) = mpsc::channel::<ClientEvent<S>>(64);
         let (command_tx, command_rx) = mpsc::channel::<ManagerCommand>(8);
         ConnectionManager {
             clients: HashMap::new(),
+            max_client_connections,
             event_rx,
             event_tx,
             command_rx,
@@ -202,12 +205,21 @@ where
                     match event {
                         None => break,
                         Some(ClientEvent::Connected { address, tx, ws }) => {
+                            if self.clients.len() >= self.max_client_connections {
+                                let mut ws = ws;
+                                ws.close(None).await.ok();
+                                debug!(%address, connections = self.clients.len(),
+                                    max_connections = self.max_client_connections,
+                                    "client rejected: max connections reached");
+                                continue;
+                            }
                             let (handler_tx, handler_rx) = mpsc::channel::<ServerMessage>(32);
                             self.clients.insert(address, ClientHandle { tx: handler_tx });
                             let event_tx = self.event_tx.clone();
                             tokio::spawn(run_connection_handler(address, ws, event_tx, handler_rx));
                             drop(tx);
-                            info!(%address, "client connected");
+                            info!(%address, connections = self.clients.len(),
+                                    max_connections = self.max_client_connections, "client connected");
                             if self.lobby_tx.send(LobbyEvent::ClientConnected { address }).await.is_err() {
                                 warn!(%address, "failed to forward ClientConnected to lobby");
                             }
@@ -495,10 +507,20 @@ mod tests {
         mpsc::Receiver<LobbyEvent>,
         mpsc::Sender<LobbyOutboundMessage>,
     ) {
+        start_manager_with_limit(2)
+    }
+
+    fn start_manager_with_limit(max_client_connections: usize) -> (
+        mpsc::Sender<ClientEvent<tokio::io::DuplexStream>>,
+        mpsc::Sender<ManagerCommand>,
+        tokio::task::JoinHandle<()>,
+        mpsc::Receiver<LobbyEvent>,
+        mpsc::Sender<LobbyOutboundMessage>,
+    ) {
         let (lobby_tx, lobby_rx) = mpsc::channel::<LobbyEvent>(64);
         let (lobby_outbound_tx, lobby_outbound_rx) = mpsc::channel::<LobbyOutboundMessage>(64);
         let manager: ConnectionManager<tokio::io::DuplexStream> =
-            ConnectionManager::new(lobby_tx, lobby_outbound_rx);
+            ConnectionManager::new(lobby_tx, lobby_outbound_rx, max_client_connections);
         let event_tx = manager.event_tx();
         let command_tx = manager.command_tx();
         let handle = tokio::spawn(manager.run());
@@ -623,8 +645,9 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let (lobby_tx, _lobby_rx) = mpsc::channel::<LobbyEvent>(64);
         let (_lobby_outbound_tx, lobby_outbound_rx) = mpsc::channel::<LobbyOutboundMessage>(64);
+        let max_client_connections = 2;
         let manager: ConnectionManager<tokio::net::TcpStream> =
-            ConnectionManager::new(lobby_tx, lobby_outbound_rx);
+            ConnectionManager::new(lobby_tx, lobby_outbound_rx, max_client_connections);
         let event_tx = manager.event_tx();
         let command_tx = manager.command_tx();
         let manager_handle = tokio::spawn(manager.run());
@@ -767,6 +790,121 @@ mod tests {
                     }
                     _ => {} // closed, error, or timeout — all acceptable
                 }
+
+                command_tx.send(ManagerCommand::Shutdown).await.unwrap();
+                let _ = timeout(Duration::from_secs(2), manager_handle).await;
+                Ok(())
+            }).unwrap();
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Test: client at the connection limit receives a clean close frame
+    // -------------------------------------------------------------------------
+    #[tokio::test]
+    async fn max_connections_rejects_with_close_frame() {
+        let (event_tx, command_tx, manager_handle, _lobby_rx, _lobby_outbound_tx) =
+            start_manager_with_limit(2);
+        let addr_a: SocketAddr = "127.0.0.1:11001".parse().unwrap();
+        let addr_b: SocketAddr = "127.0.0.1:11002".parse().unwrap();
+        let addr_c: SocketAddr = "127.0.0.1:11003".parse().unwrap();
+
+        // Hold onto these to keep the connections alive, otherwise they disconnect
+        // immediately and the limit is never reached.
+        let _client_a = connect_client(&event_tx, addr_a).await;
+        let _client_b = connect_client(&event_tx, addr_b).await;
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        let mut rejected = connect_client(&event_tx, addr_c).await;
+
+        let msg = timeout(Duration::from_secs(2), rejected.next()).await
+            .expect("timed out waiting for close frame from rejected client")
+            .expect("stream ended without a message")
+            .expect("ws error on rejected client");
+
+        assert!(
+            matches!(msg, tungstenite::Message::Close(_)),
+            "expected Close frame for rejected client, got {msg:?}"
+        );
+
+        command_tx.send(ManagerCommand::Shutdown).await.unwrap();
+        let _ = timeout(Duration::from_secs(2), manager_handle).await;
+    }
+
+    // -------------------------------------------------------------------------
+    // Test: accepted clients are unaffected when a new connection is rejected
+    // -------------------------------------------------------------------------
+    #[tokio::test]
+    async fn max_connections_does_not_affect_existing_clients() {
+        let (event_tx, command_tx, manager_handle, mut lobby_rx, _lobby_outbound_tx) =
+            start_manager_with_limit(1);
+        let addr_a: SocketAddr = "127.0.0.1:11004".parse().unwrap();
+        let addr_b: SocketAddr = "127.0.0.1:11005".parse().unwrap();
+
+        let mut client_a = connect_client(&event_tx, addr_a).await;
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        // Fill the limit — addr_b is rejected
+        let mut rejected = connect_client(&event_tx, addr_b).await;
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        // Rejected client should have received a Close frame
+        let msg = timeout(Duration::from_millis(500), rejected.next()).await
+            .expect("timed out waiting for close frame")
+            .expect("stream ended without a message")
+            .expect("ws error");
+        assert!(matches!(msg, tungstenite::Message::Close(_)));
+
+        // client_a should still be functional — its messages reach the lobby
+        let valid_json = serde_json::to_string(&go_fish_web::ClientMessage::Identity).unwrap();
+        client_a.send(tungstenite::Message::Text(valid_json.into())).await.unwrap();
+
+        let lobby_event = timeout(Duration::from_secs(2), lobby_rx.recv()).await
+            .expect("timed out waiting for lobby event")
+            .expect("lobby channel closed");
+        assert!(
+            matches!(lobby_event, LobbyEvent::ClientConnected { address } if address == addr_a),
+            "expected ClientConnected for addr_a, got {lobby_event:?}"
+        );
+
+        command_tx.send(ManagerCommand::Shutdown).await.unwrap();
+        let _ = timeout(Duration::from_secs(2), manager_handle).await;
+    }
+
+    // -------------------------------------------------------------------------
+    // Property 4: Connections beyond the limit are always rejected (Req 5.1)
+    // Feature: go-fish-game-server, Property 4: Max connection limit enforced
+    // -------------------------------------------------------------------------
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(20))]
+        #[test]
+        fn prop_max_connections_rejects_excess(limit in 1usize..=3usize) {
+            prop_async!({
+                let (event_tx, command_tx, manager_handle, _lobby_rx, _lobby_outbound_tx) =
+                    start_manager_with_limit(limit);
+
+                // Fill up to the limit. Hold onto the handles so the connections
+                // stay alive — dropped handles disconnect immediately, defeating the test.
+                let mut live_clients = vec![];
+                for i in 0..limit {
+                    let addr: SocketAddr = format!("127.0.0.2:{}", 10000 + i as u16).parse().unwrap();
+                    live_clients.push(connect_client(&event_tx, addr).await);
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+
+                // One more should be rejected with a Close frame
+                let overflow_addr: SocketAddr = "127.0.0.2:19999".parse().unwrap();
+                let mut rejected = connect_client(&event_tx, overflow_addr).await;
+
+                let msg = timeout(Duration::from_secs(2), rejected.next()).await
+                    .map_err(|_| TestCaseError::fail("timed out waiting for close frame"))?
+                    .ok_or_else(|| TestCaseError::fail("stream ended without a message"))?
+                    .map_err(|e| TestCaseError::fail(format!("ws error: {e}")))?;
+
+                prop_assert!(
+                    matches!(msg, tungstenite::Message::Close(_)),
+                    "expected Close frame, got {msg:?}"
+                );
 
                 command_tx.send(ManagerCommand::Shutdown).await.unwrap();
                 let _ = timeout(Duration::from_secs(2), manager_handle).await;

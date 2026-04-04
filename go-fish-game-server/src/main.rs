@@ -60,6 +60,7 @@ async fn main() -> Result<(), anyhow::Error> {
         None => Config::default(),
     };
 
+    tracing::info!(config = ?config, "Starting go-fish-game-server");
     run(config).await?;
 
     // Flush spans before exit
