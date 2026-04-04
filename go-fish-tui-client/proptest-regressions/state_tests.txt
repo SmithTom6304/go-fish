@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc ba68ec3bb7afc3aded576e132c7e832f3fb8b546b3d2b251763f9edb5b9807aa # shrinks to game = GameState { player_name: "A", players: ["A"], hand: Hand { books: [] }, completed_books: [], opponent_card_counts: {}, opponent_book_counts: {}, active_player: "", latest_hook_outcome: None, hook_error: None, card_pickup_notification: None, game_result: None, input_state: Idle }, snapshot_base = GameSnapshot { hand_state: HandState { hand: Hand { books: [] }, completed_books: [] }, opponents: [], active_player: "a", last_hook_outcome: None }
+cc bd91862b091e7002a2c5bb7dc4cd7555d57013281ae4bf5739154c9daaad05be # shrinks to game = GameState { player_name: "0", players: ["0"], hand: Hand { books: [] }, completed_books: [], opponent_card_counts: {}, opponent_book_counts: {}, active_player: "", latest_hook_outcome: None, hook_error: None, card_pickup_notification: None, game_result: None, input_state: Idle }, snapshot = GameSnapshot { hand_state: HandState { hand: Hand { books: [IncompleteBook { rank: King, cards: [Card { suit: Clubs, rank: Two }] }, IncompleteBook { rank: Two, cards: [Card { suit: Clubs, rank: Two }] }] }, completed_books: [] }, opponents: [], active_player: "0", last_hook_outcome: None }

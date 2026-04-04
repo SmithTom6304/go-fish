@@ -12,7 +12,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            server_url: "ws://terminaltom.com/go-fish/game-server".to_string(),
+            server_url: "wss://terminaltom.com/go-fish/game-server".to_string(),
         }
     }
 }
@@ -192,5 +192,5 @@ mod wasm {
 fn main() {
     // cannot use config, fs is stubbed out for wasm
     // configurable server url would require fetching via http
-    wasm::run("ws://terminaltom.com/go-fish/game-server");
+    wasm::run("wss://terminaltom.com/go-fish/game-server");
 }
