@@ -212,7 +212,9 @@ proptest! {
         game in game_state_strategy(),
         snapshot in game_snapshot_strategy(),
     ) {
-        let expected_hand_json = hand_json(&snapshot.hand_state.hand);
+        let mut expected_hand = snapshot.hand_state.hand.clone();
+        expected_hand.books.sort_by(|a, b| a.rank.cmp(&b.rank));
+        let expected_hand_json = hand_json(&expected_hand);
         let expected_books_json = complete_books_json(&snapshot.hand_state.completed_books);
         let expected_active = snapshot.active_player.clone();
         let expected_outcome_json = hook_outcome_json(&snapshot.last_hook_outcome);
