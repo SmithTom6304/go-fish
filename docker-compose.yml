@@ -1,0 +1,14 @@
+services:
+  game-server:
+    build:
+      context: ./go-fish-game-server
+    ports:
+      - "9001:9001"
+
+  web-client:
+    build:
+      context: ./go-fish-tui-client
+    ports:
+      - "9009:80"
+    depends_on:
+      - game-server
