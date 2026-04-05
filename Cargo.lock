@@ -842,20 +842,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "go-fish"
-version = "0.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3c150e39fd52e87713ffe87ce9ef93a2419cd4cd232fd784f0bff1b8b16d3ba"
-dependencies = [
- "enum-iterator",
- "rand 0.9.2",
- "serde",
- "serde_json",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "go-fish-game-server"
 version = "0.1.0"
 dependencies = [
@@ -863,8 +849,8 @@ dependencies = [
  "bytes",
  "clap",
  "futures-util",
- "go-fish 0.1.3 (registry+https://github.com/rust-lang/crates.io-index)",
- "go-fish-web 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "go-fish",
+ "go-fish-web",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
@@ -892,8 +878,8 @@ dependencies = [
  "futures-util",
  "getrandom 0.3.4",
  "gloo-net",
- "go-fish 0.1.3 (registry+https://github.com/rust-lang/crates.io-index)",
- "go-fish-web 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "go-fish",
+ "go-fish-web",
  "proptest",
  "ratatui",
  "ratzilla",
@@ -912,18 +898,7 @@ dependencies = [
 name = "go-fish-web"
 version = "0.1.0"
 dependencies = [
- "go-fish 0.1.3 (registry+https://github.com/rust-lang/crates.io-index)",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "go-fish-web"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "58fe91fd498df6b3dc6cdbcda4ebf3bc5e18c561d5ef4689bfd640e7ab8992cb"
-dependencies = [
- "go-fish 0.1.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "go-fish",
  "serde",
  "serde_json",
 ]
