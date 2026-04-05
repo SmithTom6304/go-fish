@@ -136,9 +136,9 @@ impl LobbyManager {
                         return;
                     }
                     // Handle Identity for negotiating clients
-                    let mut name = random_alphanum_5();
+                    let mut name = random_fish_name();
                     while self.names_in_use.contains(&name) {
-                        name = random_alphanum_5();
+                        name = random_fish_name();
                     }
                     self.negotiating.remove(&address);
                     self.players.insert(address, PlayerRecord {
@@ -828,6 +828,27 @@ pub fn random_alphanum_5() -> String {
         .collect()
 }
 
+/// Generate a random player name as an adjective-fish combo (e.g. `dreamy-bream`).
+pub fn random_fish_name() -> String {
+    use rand::seq::IndexedRandom;
+    const ADJECTIVES: &[&str] = &[
+        "dreamy", "glistening", "silvery", "slippery", "scaly",
+        "darting", "speckled", "mossy", "murky", "shimmery",
+        "dappled", "glinting", "swift", "sleepy", "bubbly",
+        "placid", "sunlit", "drifting", "whiskered", "winding",
+    ];
+    const FISH: &[&str] = &[
+        "bream", "trout", "bass", "carp", "perch",
+        "pike", "roach", "dace", "tench", "catfish",
+        "chub", "gudgeon", "salmon", "minnow", "rudd",
+        "haddock", "mullet", "flounder", "plaice", "cod",
+    ];
+    let mut rng = rand::rng();
+    let adj = ADJECTIVES.choose(&mut rng).unwrap();
+    let fish = FISH.choose(&mut rng).unwrap();
+    format!("{}-{}", adj, fish)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -876,8 +897,10 @@ mod tests {
 
         assert_eq!(msg.address, address);
         if let ServerMessage::PlayerIdentity(name) = msg.message {
-            assert_eq!(name.len(), 5);
-            assert!(name.chars().all(|c| c.is_ascii_alphanumeric()));
+            let parts: Vec<&str> = name.splitn(2, '-').collect();
+            assert_eq!(parts.len(), 2, "name should contain a hyphen: {}", name);
+            assert!(!parts[0].is_empty(), "adjective part should not be empty");
+            assert!(!parts[1].is_empty(), "fish part should not be empty");
         } else {
             panic!("expected PlayerIdentity, got {:?}", msg.message);
         }
