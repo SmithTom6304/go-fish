@@ -60,7 +60,9 @@ pub struct LobbyOutboundMessage {
 
 // ── Connection handler ────────────────────────────────────────────────────────
 
+use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
+use std::time::Duration;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, error, info, instrument, warn};
 
@@ -74,6 +76,11 @@ pub async fn run_connection_handler<S, T>(
     S: AsyncRead + AsyncWrite + Unpin,
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
+    let mut ping_interval = tokio::time::interval(Duration::from_secs(45));
+    ping_interval.tick().await; // discard the immediate first tick
+    let mut pending_pings: u32 = 0;
+    const MAX_PENDING_PINGS: u32 = 3;
+
     loop {
         tokio::select! {
             frame = ws.next() => {
@@ -92,8 +99,11 @@ pub async fn run_connection_handler<S, T>(
                         }).await;
                         break;
                     }
+                    Some(Ok(Message::Pong(_))) => {
+                        pending_pings = 0;
+                    }
                     Some(Ok(_)) => {
-                        // Non-text frame (binary, ping, pong, etc.) — ignore
+                        // Non-text frame (binary, etc.) — ignore
                         continue;
                     }
                     Some(Err(e)) => {
@@ -131,6 +141,18 @@ pub async fn run_connection_handler<S, T>(
                         }
                     }
                 }
+            }
+            _ = ping_interval.tick() => {
+                if pending_pings >= MAX_PENDING_PINGS {
+                    info!("Client unresponsive — closing connection");
+                    let _ = event_tx.send(ClientEvent::Disconnected {
+                        address,
+                        reason: DisconnectReason::Error("ping timeout".to_string()),
+                    }).await;
+                    break;
+                }
+                let _ = ws.send(Message::Ping(Bytes::new())).await;
+                pending_pings += 1;
             }
         }
     }
