@@ -301,10 +301,11 @@ fn render_local_player_strip(f: &mut Frame, game_state: &GameState, area: Rect) 
         false => Style::default(),
     };
 
+    let you_title = Span::styled("you", Style::default().fg(Color::Green));
     let hand_block = Block::default()
         .borders(Borders::ALL)
         .border_style(border_style)
-        .title("you");
+        .title(you_title);
 
     let strip_chunks = Layout::default()
         .direction(Direction::Horizontal)
