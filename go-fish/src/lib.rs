@@ -141,7 +141,13 @@ pub struct InactivePlayer {
 }
 
 #[derive(Debug, Serialize, Deserialize, Copy, Clone, PartialEq, Eq, Hash)]
-pub struct PlayerId(pub u8);
+pub struct PlayerId(u8);
+
+impl PlayerId {
+    pub fn new(id: u8) -> PlayerId {
+        PlayerId(id)
+    }
+}
 
 /// A request for another players cards
 /// > Player 2, got any three's?
