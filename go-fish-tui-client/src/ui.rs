@@ -8,7 +8,7 @@ use go_fish::{Card, IncompleteBook};
 use go_fish_web::HookError;
 use go_fish_web::HookOutcome;
 use ratatui::buffer::Buffer;
-use ratatui::layout::{Flex, Rect};
+use ratatui::layout::{Flex, Margin, Rect};
 use ratatui::prelude::Stylize;
 use ratatui::style::Modifier;
 use ratatui::text::Line;
@@ -241,8 +241,9 @@ pub fn render_game(f: &mut Frame, state: &GameState) {
                     GameInputState::SelectingTarget { cursor: c } => c == i,
                     _ => false,
                 };
+                let is_active = state.active_player == **player;
                 f.render_widget(Clear, player_area);
-                render_opponent_player_strip(f, player, *hand_size, *book_count, player_area, highlighted);
+                render_opponent_player_strip(f, player, *hand_size, *book_count, player_area, highlighted, is_active);
             }
         }
     }
@@ -286,8 +287,25 @@ fn render_book(f: &mut Frame, area: Rect, book: &IncompleteBook, highlighted: bo
     }
 }
 
+fn render_turn_indicator(f: &mut Frame, area: Rect, is_active: bool) {
+    let x = area.x + (area.width.saturating_sub(5)) / 2;
+    let y = area.y + (area.height.saturating_sub(3)) / 2;
+    let indicator = Rect { x, y, width: 5.min(area.width), height: 3.min(area.height) };
+
+    f.render_widget(Block::default().borders(Borders::ALL), indicator);
+
+    if is_active {
+        let inner = indicator.inner(Margin { horizontal: 1, vertical: 1 });
+        let buf = f.buffer_mut();
+        for row in inner.top()..inner.bottom() {
+            for col in inner.left()..inner.right() {
+                buf[(col, row)].set_char('█');
+            }
+        }
+    }
+}
+
 fn render_local_player_strip(f: &mut Frame, game_state: &GameState, area: Rect) {
-    let name = &game_state.player_name;
     let hand = &game_state.hand;
     let books = &game_state.completed_books;
     let highlighted = game_state.active_player == game_state.player_name;
@@ -318,12 +336,10 @@ fn render_local_player_strip(f: &mut Frame, game_state: &GameState, area: Rect) 
         .constraints(con)
         .split(strip_chunks[1]);
 
-    // Render name
-    // let name = Line::from(vec![Span::styled(name, Style::new().green())]);
-    // f.render_widget(name, strip_chunks[0]);
+    // Render turn indicator
+    render_turn_indicator(f, strip_chunks[0], highlighted);
 
     // Render cards
-    //f.render_widget(cards_block, strip_chunks[1]);
     for (i, book) in hand.books.iter().enumerate() {
         let h = selected_card.map(|j| j == i).unwrap_or(false);
         render_book(f, cards_chunks[i], book, h);
@@ -336,7 +352,7 @@ fn render_local_player_strip(f: &mut Frame, game_state: &GameState, area: Rect) 
     f.render_widget(hand_block, area);
 }
 
-fn render_opponent_player_strip(f: &mut Frame, name: &str, hand_size: usize, books: usize, area: Rect, highlighted: bool) {
+fn render_opponent_player_strip(f: &mut Frame, name: &str, hand_size: usize, books: usize, area: Rect, highlighted: bool, is_active: bool) {
     let strip_border = match highlighted {
         true => Style::default().fg(Color::Yellow),
         false => Style::default().fg(Color::White),
@@ -357,9 +373,8 @@ fn render_opponent_player_strip(f: &mut Frame, name: &str, hand_size: usize, boo
         .constraints(con)
         .split(strip_chunks[1]);
 
-    // Render name
-    // let name = Line::from(vec![Span::styled(name, Style::default().fg(Color::White))]);
-    // f.render_widget(name, strip_chunks[0]);
+    // Render turn indicator
+    render_turn_indicator(f, strip_chunks[0], is_active);
 
     // Render cards
     //f.render_widget(cards_block, strip_chunks[1]);
