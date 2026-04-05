@@ -214,9 +214,9 @@ impl LobbyManager {
                 }
 
                 // Generate unique lobby_id
-                let mut lobby_id = random_alphanum_5();
+                let mut lobby_id = random_water_name();
                 while self.lobbies.contains_key(&lobby_id) {
-                    lobby_id = random_alphanum_5();
+                    lobby_id = random_water_name();
                 }
 
                 let name = self.players[&address].name.clone();
@@ -812,20 +812,25 @@ impl LobbyManager {
     }
 }
 
-/// Generate a random 5-character alphanumeric string.
-pub fn random_alphanum_5() -> String {
-    use rand::Rng;
+/// Generate a random lobby name as an adjective-water-place combo (e.g. `murky-river`).
+pub fn random_water_name() -> String {
+    use rand::seq::IndexedRandom;
+    const ADJECTIVES: &[&str] = &[
+        "murky", "crystal", "rushing", "still", "shallow",
+        "deep", "misty", "cold", "tidal", "glassy",
+        "brackish", "rocky", "turbid", "frosty", "ancient",
+        "hidden", "winding", "sunlit", "placid", "mossy",
+    ];
+    const PLACES: &[&str] = &[
+        "river", "ocean", "creek", "sea", "lake",
+        "pond", "stream", "brook", "bay", "cove",
+        "estuary", "lagoon", "marsh", "reef", "fjord",
+        "inlet", "delta", "pool", "tributary", "shoal",
+    ];
     let mut rng = rand::rng();
-    (0..5)
-        .map(|_| {
-            let idx = rng.random_range(0..36usize);
-            if idx < 10 {
-                (b'0' + idx as u8) as char
-            } else {
-                (b'a' + (idx - 10) as u8) as char
-            }
-        })
-        .collect()
+    let adj = ADJECTIVES.choose(&mut rng).unwrap();
+    let place = PLACES.choose(&mut rng).unwrap();
+    format!("{}-{}", adj, place)
 }
 
 /// Generate a random player name as an adjective-fish combo (e.g. `dreamy-bream`).
@@ -1093,7 +1098,7 @@ mod tests {
         assert_eq!(msg.address, address);
         match msg.message {
             ServerMessage::LobbyJoined { lobby_id, leader, players, max_players } => {
-                assert_eq!(lobby_id.len(), 5);
+                assert!(lobby_id.contains('-'), "lobby_id should contain a hyphen: {}", lobby_id);
                 assert_eq!(leader, name);
                 assert_eq!(players, vec![name]);
                 assert_eq!(max_players, 4);
@@ -1319,7 +1324,7 @@ mod tests {
                 prop_assert_eq!(msg.address, address);
                 match msg.message {
                     ServerMessage::LobbyJoined { lobby_id, leader, players, max_players: mp } => {
-                        prop_assert_eq!(lobby_id.len(), 5, "lobby_id should be 5 chars");
+                        prop_assert!(lobby_id.contains('-'), "lobby_id should contain a hyphen: {}", lobby_id);
                         prop_assert_eq!(&leader, &name, "leader should be the creating player");
                         prop_assert_eq!(players, vec![name.clone()], "players list should contain only the creator");
                         prop_assert_eq!(mp, max_players, "max_players should match config");
