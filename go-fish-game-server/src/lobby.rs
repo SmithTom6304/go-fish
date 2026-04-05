@@ -715,7 +715,7 @@ impl LobbyManager {
         let mut name_to_addr: HashMap<String, SocketAddr> = HashMap::new();
 
         for (i, &addr) in player_addrs.iter().enumerate() {
-            let player_id = go_fish::PlayerId(i as u8);
+            let player_id = go_fish::PlayerId::new(i as u8);
             let name = self.players[&addr].name.clone();
             id_to_name.insert(player_id, name.clone());
             name_to_id.insert(name.clone(), player_id);
