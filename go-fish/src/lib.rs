@@ -295,10 +295,8 @@ impl Hand {
 
         match combined_result {
             CombineBookResult::NotCombined(a, b) => {
-                panic!(
-                    "Books {:?} and {:?} failed to combine, but we expect them to have the same rank",
-                    a, b
-                )
+                warn!("Books {:?} and {:?} failed to combine, but we expect them to have the same rank", a, b);
+                None
             }
             CombineBookResult::Combined(combined_book) => {
                 self.books.push(combined_book);
