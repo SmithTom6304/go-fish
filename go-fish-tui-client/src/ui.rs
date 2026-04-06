@@ -227,6 +227,7 @@ pub fn render_game(f: &mut Frame, state: &GameState) {
         .split(area);
 
     let strip_order = strip_order(&state.players, &state.player_name);
+    let opponents = opponents(state);
     for (i, player) in strip_order.iter().enumerate() {
         let player_area = bg_chunks[i];
         match player == &&state.player_name {
@@ -238,7 +239,10 @@ pub fn render_game(f: &mut Frame, state: &GameState) {
                 let hand_size = state.opponent_card_counts.get(*player).unwrap_or(&0);
                 let book_count = state.opponent_book_counts.get(*player).unwrap_or(&0);
                 let highlighted = match state.input_state {
-                    GameInputState::SelectingTarget { cursor: c } => c == i,
+                    GameInputState::SelectingTarget { cursor: c } => {
+                        let selected_name = opponents.get(c).map_or("", |name| name);
+                        selected_name == *player
+                    },
                     _ => false,
                 };
                 let is_active = state.active_player == **player;
