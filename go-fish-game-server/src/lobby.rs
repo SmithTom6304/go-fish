@@ -4,7 +4,7 @@ use go_fish_web::{ClientMessage, ServerMessage};
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use tokio::sync::mpsc;
-use tracing::{debug, info};
+use tracing::{debug, info, instrument};
 
 // ── Client phase ──────────────────────────────────────────────────────────────
 
@@ -103,6 +103,7 @@ impl LobbyManager {
         mpsc::channel(8)
     }
 
+    #[instrument(skip(self))]
     pub async fn run(mut self) {
         loop {
             tokio::select! {
@@ -121,6 +122,7 @@ impl LobbyManager {
         }
     }
 
+    #[instrument(level = "debug", skip(self))]
     async fn handle_event(&mut self, event: LobbyEvent) {
         match event {
             LobbyEvent::ClientConnected { address } => {
