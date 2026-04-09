@@ -503,7 +503,7 @@ impl LobbyManager {
                 let result = match result {
                     Ok(r) => r,
                     Err(e) => {
-                        tracing::warn!("take_turn error: {:?}", e);
+                        tracing::warn!(error = ?e, "take_turn error");
                         return;
                     }
                 };
