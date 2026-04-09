@@ -498,6 +498,12 @@ impl LobbyManager {
                         LobbyState::InGame(s) => s,
                         _ => return,
                     };
+                    let span = tracing::debug_span!("take_turn",
+                        lobby_id = %lobby_id,
+                        player = %sender_name,
+                        rank = ?hook_request.rank,
+                    );
+                    let _enter = span.enter();
                     session.game.take_turn(go_fish::Hook { target: target_player_id, rank: hook_request.rank })
                 };
 
