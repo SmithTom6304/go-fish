@@ -25,7 +25,8 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 tungstenite = "0.28.0"
 opentelemetry = { version = "0.31", features = ["logs"] }
 opentelemetry_sdk = { version = "0.31", features = ["rt-tokio", "logs"] }
-opentelemetry-otlp = { version = "0.31", features = ["http-proto", "reqwest-client", "logs"] }
+opentelemetry-otlp = { version = "0.31", features = ["http-proto", "reqwest-blocking-client", "logs"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking"] }
 opentelemetry-appender-tracing = "0.31"
 tracing-opentelemetry = "0.32"
 

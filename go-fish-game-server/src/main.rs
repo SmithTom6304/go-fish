@@ -2,6 +2,7 @@ use clap::Parser;
 use go_fish_game_server::{run, Config};
 use opentelemetry::{global, trace::TracerProvider as _};
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
+use opentelemetry_otlp::WithHttpConfig;
 use opentelemetry_sdk::{logs::SdkLoggerProvider, trace::SdkTracerProvider};
 use tracing::warn;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
@@ -24,6 +25,9 @@ fn service_resource() -> opentelemetry_sdk::Resource {
 fn init_tracer_provider() -> SdkTracerProvider {
     let exporter = opentelemetry_otlp::SpanExporter::builder()
         .with_http()
+        // Blocking client is safe here: the batch processor runs on its own dedicated
+        // thread outside the Tokio runtime, so blocking never affects the async server.
+        .with_http_client(reqwest::blocking::Client::new())
         .build()
         .expect("failed to build OTLP span exporter");
 
@@ -39,6 +43,9 @@ fn init_tracer_provider() -> SdkTracerProvider {
 fn init_logger_provider() -> SdkLoggerProvider {
     let exporter = opentelemetry_otlp::LogExporter::builder()
         .with_http()
+        // Blocking client is safe here: the batch processor runs on its own dedicated
+        // thread outside the Tokio runtime, so blocking never affects the async server.
+        .with_http_client(reqwest::blocking::Client::new())
         .build()
         .expect("failed to build OTLP log exporter");
 
@@ -48,11 +55,12 @@ fn init_logger_provider() -> SdkLoggerProvider {
         .build()
 }
 
-#[tokio::main]
-async fn main() -> Result<(), anyhow::Error> {
+// main is intentionally sync so that the telemetry providers are created and dropped
+// outside the Tokio runtime. reqwest::blocking::Client owns an internal runtime, and
+// dropping it from within an async context panics.
+fn main() -> Result<(), anyhow::Error> {
     let tracer_provider = init_tracer_provider();
     let logger_provider = init_logger_provider();
-
     let trace_layer = tracing_opentelemetry::layer().with_tracer(tracer_provider.tracer("go-fish-game-server"));
     let log_layer = OpenTelemetryTracingBridge::new(&logger_provider);
 
@@ -63,6 +71,19 @@ async fn main() -> Result<(), anyhow::Error> {
         .with(log_layer)
         .init();
 
+    let result = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(run_server());
+
+    // Flush telemetry before exit
+    let _ = tracer_provider.shutdown();
+    let _ = logger_provider.shutdown();
+
+    result
+}
+
+async fn run_server() -> Result<(), anyhow::Error> {
     let cli = Cli::parse();
 
     let config = match cli.config {
@@ -83,10 +104,5 @@ async fn main() -> Result<(), anyhow::Error> {
     };
 
     tracing::info!(config = ?config, "Starting go-fish-game-server");
-    run(config).await?;
-
-    // Flush telemetry before exit
-    let _ = tracer_provider.shutdown();
-    let _ = logger_provider.shutdown();
-    Ok(())
+    run(config).await
 }
