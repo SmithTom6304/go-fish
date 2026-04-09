@@ -5,8 +5,8 @@ edition = "2021"
 resolver = "3"
 
 [dependencies]
-go-fish = { path = "../go-fish", version = "0.1.3" }
-go-fish-web = { path = "../go-fish-web", version = "0.1.0" }
+go-fish = { version = "0.1.4" }
+go-fish-web = { version = "0.1.1" }
 toml = "1.0.7"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
