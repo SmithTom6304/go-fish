@@ -51,13 +51,27 @@ pub async fn run(config: Config) -> Result<(), anyhow::Error> {
     tokio::spawn(connection::run_tcp_listener(config.address, event_tx, listener_cmd_rx));
     tokio::spawn(lobby_manager.run());
 
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+
+    async fn shutdown(
+        listener_cmd_tx: mpsc::Sender<ManagerCommand>,
+        command_tx: mpsc::Sender<ManagerCommand>,
+        lobby_cmd_tx: mpsc::Sender<LobbyCommand>,
+    ) {
+        let _ = listener_cmd_tx.send(ManagerCommand::Shutdown).await;
+        let _ = command_tx.send(ManagerCommand::Shutdown).await;
+        let _ = lobby_cmd_tx.send(LobbyCommand::Shutdown).await;
+    }
+
     tokio::select! {
         _ = manager.run() => {}
         _ = tokio::signal::ctrl_c() => {
-            info!("received Ctrl+C, shutting down gracefully");
-            let _ = listener_cmd_tx.send(ManagerCommand::Shutdown).await;
-            let _ = command_tx.send(ManagerCommand::Shutdown).await;
-            let _ = lobby_cmd_tx.send(LobbyCommand::Shutdown).await;
+            info!("received SIGINT, shutting down gracefully");
+            shutdown(listener_cmd_tx, command_tx, lobby_cmd_tx).await;
+        }
+        _ = sigterm.recv() => {
+            info!("received SIGTERM, shutting down gracefully");
+            shutdown(listener_cmd_tx, command_tx, lobby_cmd_tx).await;
         }
     }
 
