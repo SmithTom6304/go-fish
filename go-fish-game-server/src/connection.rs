@@ -253,7 +253,8 @@ where
                                         warn!(%address, "failed to forward ClientMessage to lobby");
                                     }
                                 }
-                                Err(_) => {
+                                Err(e) => {
+                                    warn!(%address, error = %e, raw = %text, "failed to parse client message");
                                     if let Some(handle) = self.clients.get(&address) {
                                         let error_json = serde_json::to_string(
                                             &go_fish_web::ServerMessage::Error("invalid message".to_string())
