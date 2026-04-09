@@ -181,6 +181,7 @@ impl LobbyManager {
                             }
                         }
                         ClientPhase::InGame { lobby_id } => {
+                            info!(%address, lobby_id = %lobby_id, "player disconnected mid-game, ending session");
                             // End the game session due to disconnection
                             // Do NOT send any message to the disconnecting address
                             // Remove the disconnecting player from the session's name_to_addr so they don't receive GameResult
