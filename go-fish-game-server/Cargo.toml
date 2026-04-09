@@ -23,9 +23,10 @@ tokio-tungstenite = "0.28.0"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 tungstenite = "0.28.0"
-opentelemetry = "0.31"
-opentelemetry_sdk = { version = "0.31", features = ["rt-tokio"] }
-opentelemetry-otlp = { version = "0.31", features = ["grpc-tonic"] }
+opentelemetry = { version = "0.31", features = ["logs"] }
+opentelemetry_sdk = { version = "0.31", features = ["rt-tokio", "logs"] }
+opentelemetry-otlp = { version = "0.31", features = ["http-proto", "reqwest-client", "logs"] }
+opentelemetry-appender-tracing = "0.31"
 tracing-opentelemetry = "0.32"
 
 [dev-dependencies]
