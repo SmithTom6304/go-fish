@@ -21,7 +21,6 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
     Frame,
 };
-use std::fmt::format;
 
 pub fn render_connecting(f: &mut Frame, state: &ConnectingState) {
     let area = f.area();
