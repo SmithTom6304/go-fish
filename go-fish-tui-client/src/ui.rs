@@ -376,7 +376,6 @@ fn render_opponent_player_strip(f: &mut Frame, name: &str, hand_size: usize, boo
     render_turn_indicator(f, strip_chunks[0], is_active);
 
     // Render cards
-    //f.render_widget(cards_block, strip_chunks[1]);
     for i in 0..hand_size {
         render_card_border(f, cards_chunks[i], false);
     }
