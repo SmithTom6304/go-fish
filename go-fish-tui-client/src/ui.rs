@@ -79,7 +79,7 @@ fn render_background(f: &mut Frame, area: Rect, player_name: &str, error: Option
     if let Some(err) = error {
         let error_para = Paragraph::new(err)
             .style(Style::default().fg(Color::Red));
-        f.render_widget(error_para, chunks[1]);
+        f.render_widget(error_para, chunks[2]);
     }
 
     let hints = Paragraph::new(hints)
