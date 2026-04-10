@@ -181,10 +181,6 @@ pub fn render_lobby(f: &mut Frame, state: &LobbyState) {
     f.render_widget(player_list, fg_chunks[1]);
 
 
-    let player_name = Line::from(vec![
-        Span::styled("You are player ", Style::default()),
-        Span::styled(&state.player_name, Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
-    ]);
 }
 
 pub fn render_game(f: &mut Frame, state: &GameState) {
