@@ -2,7 +2,6 @@ use crate::state::PreLobbyInputState;
 use crate::state::{AppState, ConnectingState, LobbyState, PreLobbyState, Screen};
 use crate::state::{GameInputState, GameState};
 use go_fish::HookResult;
-use go_fish::IncompleteBook;
 use go_fish_web::HookError;
 use go_fish_web::HookOutcome;
 use ratatui::layout::{Flex, Margin, Rect};
@@ -260,13 +259,6 @@ pub fn render(f: &mut Frame, app: &AppState) {
 }
 
 
-fn render_book(f: &mut Frame, area: Rect, book: &IncompleteBook, highlighted: bool) {
-    for (i, card) in book.cards.iter().enumerate() {
-        let rect = Rect::new(area.x + (i as u16), area.y, CARD_WIDTH, CARD_HEIGHT);
-        f.render_widget(Clear, rect);
-        f.render_widget(widgets::CardWidget::FaceUp { card, highlighted }, rect);
-    }
-}
 
 fn render_turn_indicator(f: &mut Frame, area: Rect, is_active: bool) {
     let x = area.x + (area.width.saturating_sub(5)) / 2;
@@ -324,7 +316,7 @@ fn render_local_player_strip(f: &mut Frame, game_state: &GameState, area: Rect) 
     // Render cards
     for (i, book) in hand.books.iter().enumerate() {
         let h = selected_card.map(|j| j == i).unwrap_or(false);
-        render_book(f, cards_chunks[i], book, h);
+        f.render_widget(widgets::IncompleteBookWidget { book, highlighted: h }, cards_chunks[i]);
     }
 
     // Render completed books
@@ -377,12 +369,12 @@ fn render_status_bar(f: &mut Frame, state: &GameState, area: Rect) {
 }
 
 mod widgets {
-    use go_fish::{Card, Rank, Suit};
+    use go_fish::{Card, IncompleteBook, Rank, Suit};
     use ratatui::{
         buffer::Buffer,
         layout::Rect,
         style::{Color, Style},
-        widgets::{Block, Borders, Widget},
+        widgets::{Block, Borders, Clear, Widget},
     };
 
     pub(super) fn rank_short(rank: Rank) -> &'static str {
@@ -422,6 +414,21 @@ mod widgets {
     pub(super) enum CardWidget<'a> {
         FaceDown { highlighted: bool },
         FaceUp { card: &'a Card, highlighted: bool },
+    }
+
+    pub(super) struct IncompleteBookWidget<'a> {
+        pub book: &'a IncompleteBook,
+        pub highlighted: bool,
+    }
+
+    impl Widget for IncompleteBookWidget<'_> {
+        fn render(self, area: Rect, buf: &mut Buffer) {
+            for (i, card) in self.book.cards.iter().enumerate() {
+                let rect = Rect::new(area.x + (i as u16), area.y, super::CARD_WIDTH, super::CARD_HEIGHT);
+                Clear.render(rect, buf);
+                CardWidget::FaceUp { card, highlighted: self.highlighted }.render(rect, buf);
+            }
+        }
     }
 
     impl Widget for CardWidget<'_> {
