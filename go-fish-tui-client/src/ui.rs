@@ -22,6 +22,9 @@ use ratatui::{
     Frame,
 };
 
+const CARD_WIDTH: u16 = 7;
+const CARD_HEIGHT: u16 = 5;
+
 pub fn render_connecting(f: &mut Frame, state: &ConnectingState) {
     let area = f.area();
     let vertical = Layout::default()
@@ -213,7 +216,7 @@ pub fn render_game(f: &mut Frame, state: &GameState) {
     }
 
     // Fill constraint per player
-    let mut constraints = state.players.iter().map(|_| Constraint::Length(7)).collect::<Vec<_>>();
+    let mut constraints = state.players.iter().map(|_| Constraint::Length(CARD_HEIGHT + 2)).collect::<Vec<_>>();
     // Add status bar and keyboard hints
     constraints.push(Constraint::Length(2));
     constraints.push(Constraint::Length(2));
@@ -260,7 +263,7 @@ pub fn render(f: &mut Frame, app: &AppState) {
 }
 
 fn render_card_border(f: &mut Frame, area: Rect, highlighted: bool) {
-    let rect = Rect::new(area.x, area.y, 7, 5);
+    let rect = Rect::new(area.x, area.y, CARD_WIDTH, CARD_HEIGHT);
     let col = if highlighted { Color::Yellow } else { Color::White };
     let block = Block::default().borders(Borders::ALL).style(Style::default().fg(col));
     f.render_widget(block, rect);
@@ -279,7 +282,7 @@ fn render_card_interior(f: &mut Frame, area: Rect, card: &Card) {
 
 fn render_book(f: &mut Frame, area: Rect, book: &IncompleteBook, highlighted: bool) {
     for (i, card) in book.cards.iter().enumerate() {
-        let rect = Rect::new(area.x + (i as u16), area.y, 7, 5);
+        let rect = Rect::new(area.x + (i as u16), area.y, CARD_WIDTH, CARD_HEIGHT);
         f.render_widget(Clear, rect);
         render_card_border(f, rect, highlighted);
         render_card_interior(f, rect, card);
@@ -327,7 +330,7 @@ fn render_local_player_strip(f: &mut Frame, game_state: &GameState, area: Rect) 
 
     let strip_chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(7), Constraint::Fill(1), Constraint::Length(14)])
+        .constraints([Constraint::Length(CARD_WIDTH), Constraint::Fill(1), Constraint::Length(14)])
         .split(hand_block.inner(area));
 
     let con = hand.books.iter().map(|book| Constraint::Length(6 + (book.cards.len()) as u16)).collect::<Vec<_>>();
@@ -365,10 +368,10 @@ fn render_opponent_player_strip(f: &mut Frame, name: &str, hand_size: usize, boo
 
     let strip_chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(7), Constraint::Fill(1), Constraint::Length(14)])
+        .constraints([Constraint::Length(CARD_WIDTH), Constraint::Fill(1), Constraint::Length(14)])
         .split(hand_block.inner(area));
 
-    let con = (0..hand_size).map(|_| Constraint::Length(7)).collect::<Vec<_>>();
+    let con = (0..hand_size).map(|_| Constraint::Length(CARD_WIDTH)).collect::<Vec<_>>();
     let cards_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints(con)
