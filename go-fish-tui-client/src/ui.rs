@@ -321,6 +321,141 @@ mod render {
     fn opponents(game: &GameState) -> Vec<&String> {
         game.players.iter().filter(|p| p != &&game.player_name).collect()
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::state::{AppState, Screen};
+        use go_fish::{Card, CompleteBook, Hand, HookResult, IncompleteBook, Rank, Suit};
+        use go_fish_web::{GameResult, HookOutcome};
+        use proptest::prelude::*;
+        use ratatui::{backend::TestBackend, Terminal};
+
+        fn rank_strategy() -> impl Strategy<Value = Rank> {
+            prop_oneof![
+                Just(Rank::Two), Just(Rank::Three), Just(Rank::Four), Just(Rank::Five),
+                Just(Rank::Six), Just(Rank::Seven), Just(Rank::Eight), Just(Rank::Nine),
+                Just(Rank::Ten), Just(Rank::Jack), Just(Rank::Queen), Just(Rank::King),
+                Just(Rank::Ace),
+            ]
+        }
+
+        fn suit_strategy() -> impl Strategy<Value = Suit> {
+            prop_oneof![
+                Just(Suit::Clubs), Just(Suit::Diamonds),
+                Just(Suit::Hearts), Just(Suit::Spades),
+            ]
+        }
+
+        fn card_strategy() -> impl Strategy<Value = Card> {
+            (suit_strategy(), rank_strategy()).prop_map(|(suit, rank)| Card { suit, rank })
+        }
+
+        fn incomplete_book_strategy() -> impl Strategy<Value = IncompleteBook> {
+            (rank_strategy(), prop::collection::vec(card_strategy(), 1..=3))
+                .prop_map(|(rank, cards)| IncompleteBook { rank, cards })
+        }
+
+        fn complete_book_strategy() -> impl Strategy<Value = CompleteBook> {
+            (rank_strategy(), suit_strategy(), suit_strategy(), suit_strategy(), suit_strategy())
+                .prop_map(|(rank, s1, s2, s3, s4)| CompleteBook {
+                    rank,
+                    cards: [
+                        Card { suit: s1, rank }, Card { suit: s2, rank },
+                        Card { suit: s3, rank }, Card { suit: s4, rank },
+                    ],
+                })
+        }
+
+        fn hand_strategy() -> impl Strategy<Value = Hand> {
+            prop::collection::vec(incomplete_book_strategy(), 0..=4)
+                .prop_map(|books| Hand { books })
+        }
+
+        fn hook_result_strategy() -> impl Strategy<Value = HookResult> {
+            prop_oneof![
+                incomplete_book_strategy().prop_map(HookResult::Catch),
+                Just(HookResult::GoFish),
+            ]
+        }
+
+        fn hook_outcome_strategy() -> impl Strategy<Value = HookOutcome> {
+            ("[a-zA-Z0-9]{1,16}", "[a-zA-Z0-9]{1,16}", rank_strategy(), hook_result_strategy())
+                .prop_map(|(fisher_name, target_name, rank, result)| HookOutcome {
+                    fisher_name, target_name, rank, result,
+                })
+        }
+
+        fn game_result_strategy() -> impl Strategy<Value = GameResult> {
+            (
+                prop::collection::vec("[a-zA-Z0-9]{1,16}", 0..=4),
+                prop::collection::vec("[a-zA-Z0-9]{1,16}", 0..=4),
+            ).prop_map(|(winners, losers)| GameResult { winners, losers })
+        }
+
+        fn game_input_state_strategy(players: &[String], local_name: &str) -> impl Strategy<Value = GameInputState> {
+            let opponents: Vec<String> = players.iter()
+                .filter(|p| p.as_str() != local_name)
+                .cloned()
+                .collect();
+            let target = opponents.into_iter().next().unwrap_or_default();
+            prop_oneof![
+                Just(GameInputState::Idle),
+                (0usize..=3usize).prop_map(|cursor| GameInputState::SelectingTarget { cursor }),
+                (Just(target), 0usize..=12usize)
+                    .prop_map(|(t, cursor)| GameInputState::SelectingRank { target: t, cursor }),
+            ]
+        }
+
+        fn game_state_strategy() -> impl Strategy<Value = GameState> {
+            (
+                "[a-zA-Z0-9]{1,16}",
+                prop::collection::vec("[a-zA-Z0-9]{1,16}", 0..=3),
+            ).prop_flat_map(|(player_name, extra_players)| {
+                let mut players = vec![player_name.clone()];
+                players.extend(extra_players);
+                let input_state_strat = game_input_state_strategy(&players, &player_name);
+                (
+                    Just(player_name),
+                    Just(players),
+                    hand_strategy(),
+                    prop::collection::vec(complete_book_strategy(), 0..=4),
+                    prop::option::of(hook_outcome_strategy()),
+                    prop::option::of(game_result_strategy()),
+                    input_state_strat,
+                )
+            }).prop_map(|(player_name, players, hand, completed_books, latest_hook_outcome, game_result, input_state)| {
+                let opponents: std::collections::HashMap<String, usize> = players.iter()
+                    .filter(|p| p.as_str() != player_name.as_str())
+                    .map(|p| (p.clone(), 0))
+                    .collect();
+                GameState {
+                    active_player: player_name.clone(),
+                    opponent_card_counts: opponents.clone(),
+                    opponent_book_counts: opponents.keys().map(|k| (k.clone(), 0)).collect(),
+                    hook_error: None,
+                    card_pickup_notification: None,
+                    player_name,
+                    players,
+                    hand,
+                    completed_books,
+                    latest_hook_outcome,
+                    game_result,
+                    input_state,
+                }
+            })
+        }
+
+        proptest! {
+            #[test]
+            fn render_game_does_not_panic(state in game_state_strategy()) {
+                let backend = TestBackend::new(120, 40);
+                let mut terminal = Terminal::new(backend).unwrap();
+                let app = AppState { screen: Screen::Game(state) };
+                terminal.draw(|f| render(f, &app)).unwrap();
+            }
+        }
+    }
 }
 
 mod widgets {
@@ -520,5 +655,110 @@ mod widgets {
             .render(strip_chunks[2], buf);
 
         block.render(area, buf);
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ratatui::{buffer::Buffer, layout::Rect};
+
+        // 7×5 — matches CARD_WIDTH × CARD_HEIGHT
+        fn card_area() -> Rect {
+            Rect::new(0, 0, 7, 5)
+        }
+
+        // ── CardWidget ────────────────────────────────────────────────────────
+
+        #[test]
+        fn card_face_down_has_white_border() {
+            let mut buf = Buffer::empty(card_area());
+            CardWidget::FaceDown { highlighted: false }.render(card_area(), &mut buf);
+            assert_eq!(buf[(0, 0)].symbol(), "┌");
+            assert_eq!(buf[(0, 0)].fg, Color::White);
+        }
+
+        #[test]
+        fn card_face_down_highlighted_has_yellow_border() {
+            let mut buf = Buffer::empty(card_area());
+            CardWidget::FaceDown { highlighted: true }.render(card_area(), &mut buf);
+            assert_eq!(buf[(0, 0)].fg, Color::Yellow);
+        }
+
+        #[test]
+        fn card_face_up_renders_rank_and_suit_symbols() {
+            let mut buf = Buffer::empty(card_area());
+            let card = Card { suit: Suit::Spades, rank: Rank::Ace };
+            CardWidget::FaceUp { card: &card, highlighted: false }.render(card_area(), &mut buf);
+            assert_eq!(buf[(2, 1)].symbol(), "♠");
+            assert_eq!(buf[(3, 2)].symbol(), "A");
+            assert_eq!(buf[(4, 3)].symbol(), "♠");
+        }
+
+        #[test]
+        fn card_face_up_red_suit_has_red_foreground() {
+            let mut buf = Buffer::empty(card_area());
+            let card = Card { suit: Suit::Hearts, rank: Rank::King };
+            CardWidget::FaceUp { card: &card, highlighted: false }.render(card_area(), &mut buf);
+            assert_eq!(buf[(2, 1)].fg, Color::Red);
+            assert_eq!(buf[(4, 3)].fg, Color::Red);
+        }
+
+        // ── TurnIndicatorWidget ───────────────────────────────────────────────
+
+        #[test]
+        fn turn_indicator_inactive_interior_is_spaces() {
+            let mut buf = Buffer::empty(card_area());
+            TurnIndicatorWidget { is_active: false }.render(card_area(), &mut buf);
+            // 5×3 indicator centred in 7×5: top-left at (1,1), interior at row 2, cols 2–4
+            assert_eq!(buf[(2, 2)].symbol(), " ");
+            assert_eq!(buf[(3, 2)].symbol(), " ");
+            assert_eq!(buf[(4, 2)].symbol(), " ");
+        }
+
+        #[test]
+        fn turn_indicator_active_fills_interior() {
+            let mut buf = Buffer::empty(card_area());
+            TurnIndicatorWidget { is_active: true }.render(card_area(), &mut buf);
+            assert_eq!(buf[(2, 2)].symbol(), "█");
+            assert_eq!(buf[(3, 2)].symbol(), "█");
+            assert_eq!(buf[(4, 2)].symbol(), "█");
+        }
+
+        // ── IncompleteBookWidget ──────────────────────────────────────────────
+
+        #[test]
+        fn incomplete_book_single_card_renders_at_origin() {
+            let mut buf = Buffer::empty(card_area());
+            let card = Card { suit: Suit::Clubs, rank: Rank::Seven };
+            let book = IncompleteBook { rank: Rank::Seven, cards: vec![card] };
+            IncompleteBookWidget { book: &book, highlighted: false }.render(card_area(), &mut buf);
+            assert_eq!(buf[(3, 2)].symbol(), "7");
+        }
+
+        #[test]
+        fn incomplete_book_second_card_is_offset_one_column() {
+            // Width 8 fits two CARD_WIDTH=7 cards staggered by 1 column
+            let area = Rect::new(0, 0, 8, 5);
+            let mut buf = Buffer::empty(area);
+            let book = IncompleteBook {
+                rank: Rank::Three,
+                cards: vec![
+                    Card { suit: Suit::Hearts, rank: Rank::Two },
+                    Card { suit: Suit::Spades, rank: Rank::Three },
+                ],
+            };
+            IncompleteBookWidget { book: &book, highlighted: false }.render(area, &mut buf);
+            // Card 1 is at x_offset=1: rank at (1+3, 2) = (4, 2)
+            assert_eq!(buf[(4, 2)].symbol(), "3");
+        }
+
+        #[test]
+        fn incomplete_book_highlighted_uses_yellow_border() {
+            let mut buf = Buffer::empty(card_area());
+            let card = Card { suit: Suit::Diamonds, rank: Rank::Five };
+            let book = IncompleteBook { rank: Rank::Five, cards: vec![card] };
+            IncompleteBookWidget { book: &book, highlighted: true }.render(card_area(), &mut buf);
+            assert_eq!(buf[(0, 0)].fg, Color::Yellow);
+        }
     }
 }
