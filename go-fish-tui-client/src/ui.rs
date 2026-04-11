@@ -115,9 +115,10 @@ pub fn render_pre_lobby(f: &mut Frame, state: &PreLobbyState) {
                     }
                 }
             };
-            let border_style = match error.is_some() {
-                true => Style::default().fg(Color::Red),
-                false => Style::default(),
+            let border_style = if error.is_some() {
+                Style::default().fg(Color::Red)
+            } else {
+                Style::default()
             };
             let lobby_id_para = Paragraph::new(text).centered()
                 .block(Block::default().borders(Borders::ALL)
@@ -133,9 +134,10 @@ pub fn render_lobby(f: &mut Frame, state: &LobbyState) {
 
     // Keybind hints
     let can_start = state.players.len() >= 2 && state.leader == state.player_name;
-    let hints = match can_start {
-        true => "[s] Start game [q] Leave lobby",
-        false => "[q] Leave lobby",
+    let hints = if can_start {
+        "[s] Start game [q] Leave lobby"
+    } else {
+        "[q] Leave lobby"
     };
 
     render_background(f, area, &state.player_name, state.error.as_deref(), hints);
@@ -161,9 +163,10 @@ pub fn render_lobby(f: &mut Frame, state: &LobbyState) {
         .players
         .iter()
         .map(|p| {
-            let str = match p == &state.leader {
-                true => format!("★ {}", p),
-                false => format!("  {}", p),
+            let str = if p == &state.leader {
+                format!("★ {}", p)
+            } else {
+                format!("  {}", p)
             };
             let is_client = p == &state.player_name;
             let style = if is_client {
@@ -185,16 +188,16 @@ pub fn render_lobby(f: &mut Frame, state: &LobbyState) {
 pub fn render_game(f: &mut Frame, state: &GameState) {
     let area = f.area();
     let is_turn = state.active_player == state.player_name;
-    let hints = match state.game_result.is_some() {
-        true => "[enter] Return to menu [q] Quit",
-        false => match is_turn {
-            true => match &state.input_state {
-                GameInputState::Idle => "[h] Hook [q] Quit",
-                GameInputState::SelectingTarget { .. } => "[k/up] Up [j/down] Down [enter] Select",
-                GameInputState::SelectingRank { .. } => "[h/left] Left [l/right] Right [enter] Select]"
-            },
-            false => "[q] Quit",
+    let hints = if state.game_result.is_some() {
+        "[enter] Return to menu [q] Quit"
+    } else if is_turn {
+        match &state.input_state {
+            GameInputState::Idle => "[h] Hook [q] Quit",
+            GameInputState::SelectingTarget { .. } => "[k/up] Up [j/down] Down [enter] Select",
+            GameInputState::SelectingRank { .. } => "[h/left] Left [l/right] Right [enter] Select]",
         }
+    } else {
+        "[q] Quit"
     };
 
     render_background(f, area, &state.player_name, None, hints);
@@ -225,25 +228,22 @@ pub fn render_game(f: &mut Frame, state: &GameState) {
     let opponents = opponents(state);
     for (i, player) in strip_order.iter().enumerate() {
         let player_area = bg_chunks[i];
-        match player == &&state.player_name {
-            true => {
-                f.render_widget(Clear, player_area);
-                render_local_player_strip(f, &state, player_area);
-            },
-            false => {
-                let hand_size = state.opponent_card_counts.get(*player).unwrap_or(&0);
-                let book_count = state.opponent_book_counts.get(*player).unwrap_or(&0);
-                let highlighted = match state.input_state {
-                    GameInputState::SelectingTarget { cursor: c } => {
-                        let selected_name = opponents.get(c).map_or("", |name| name);
-                        selected_name == *player
-                    },
-                    _ => false,
-                };
-                let is_active = state.active_player == **player;
-                f.render_widget(Clear, player_area);
-                render_opponent_player_strip(f, player, *hand_size, *book_count, player_area, highlighted, is_active);
-            }
+        if player == &&state.player_name {
+            f.render_widget(Clear, player_area);
+            render_local_player_strip(f, &state, player_area);
+        } else {
+            let hand_size = state.opponent_card_counts.get(*player).unwrap_or(&0);
+            let book_count = state.opponent_book_counts.get(*player).unwrap_or(&0);
+            let highlighted = match state.input_state {
+                GameInputState::SelectingTarget { cursor: c } => {
+                    let selected_name = opponents.get(c).map_or("", |name| name);
+                    selected_name == *player
+                },
+                _ => false,
+            };
+            let is_active = state.active_player == **player;
+            f.render_widget(Clear, player_area);
+            render_opponent_player_strip(f, player, *hand_size, *book_count, player_area, highlighted, is_active);
         }
     }
 
@@ -313,9 +313,10 @@ fn render_local_player_strip(f: &mut Frame, game_state: &GameState, area: Rect) 
         _ => None,
     };
 
-    let border_style = match highlighted {
-        true => Style::new().green(),
-        false => Style::default(),
+    let border_style = if highlighted {
+        Style::new().green()
+    } else {
+        Style::default()
     };
 
     let you_title = Span::styled("you", Style::default().fg(Color::Green));
@@ -352,9 +353,10 @@ fn render_local_player_strip(f: &mut Frame, game_state: &GameState, area: Rect) 
 }
 
 fn render_opponent_player_strip(f: &mut Frame, name: &str, hand_size: usize, books: usize, area: Rect, highlighted: bool, is_active: bool) {
-    let strip_border = match highlighted {
-        true => Style::default().fg(Color::Yellow),
-        false => Style::default().fg(Color::White),
+    let strip_border = if highlighted {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default().fg(Color::White)
     };
     let hand_block = Block::default()
         .borders(Borders::ALL)
@@ -422,28 +424,26 @@ fn suit_symbol(suit: Suit) -> &'static str {
 
 fn suit_colour(suit: Suit) -> Color {
     match suit {
-        Suit::Spades => Color::White,
-        Suit::Hearts => Color::Red,
-        Suit::Diamonds => Color::Red,
-        Suit::Clubs => Color::White
+        Suit::Hearts | Suit::Diamonds => Color::Red,
+        Suit::Spades | Suit::Clubs => Color::White,
     }
 }
 
 fn status_message(game_state: &'_ GameState) -> Line<'_> {
     if let Some(outcome) = &game_state.latest_hook_outcome {
-        return hook_outcome_message(outcome, game_state.player_name.clone());
+        return hook_outcome_message(outcome, &game_state.player_name);
     }
     Line::styled("Game started!".to_string(), Style::default())
 }
 
-fn hook_outcome_message<'a>(outcome: &HookOutcome, local_name: String) -> Line<'a> {
+fn hook_outcome_message<'a>(outcome: &HookOutcome, local_name: &str) -> Line<'a> {
     let rank = rank_short(outcome.rank);
     match &outcome.result {
         HookResult::Catch(book) => {
             Line::from(vec![
-                format_name(outcome.fisher_name.clone(), local_name.clone()),
+                format_name(&outcome.fisher_name, local_name),
                 " asked ".into(),
-                format_name(outcome.target_name.clone(), local_name),
+                format_name(&outcome.target_name, local_name),
                 " for ".into(),
                 rank.into(),
                 " — Caught ".into(),
@@ -453,9 +453,9 @@ fn hook_outcome_message<'a>(outcome: &HookOutcome, local_name: String) -> Line<'
         },
         HookResult::GoFish => {
             Line::from(vec![
-                format_name(outcome.fisher_name.clone(), local_name.clone()),
+                format_name(&outcome.fisher_name, local_name),
                 " asked ".into(),
-                format_name(outcome.target_name.clone(), local_name),
+                format_name(&outcome.target_name, local_name),
                 " for ".into(),
                 rank.into(),
                 " — Go Fish!".into(),
@@ -481,10 +481,11 @@ fn strip_order<'a>(players: &'a [String], local: &str) -> Vec<&'a String> {
         .collect()
 }
 
-fn format_name<'a>(name: String, local_name: String) -> Span<'a> {
-    match name == local_name {
-        true => Span::styled("you", Style::new().green()),
-        false => Span::styled(name, Style::default()),
+fn format_name(name: &str, local_name: &str) -> Span<'static> {
+    if name == local_name {
+        Span::styled("you", Style::new().green())
+    } else {
+        Span::styled(name.to_owned(), Style::default())
     }
 }
 
