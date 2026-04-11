@@ -228,21 +228,35 @@ pub fn render_game(f: &mut Frame, state: &GameState) {
     for (i, player) in strip_order.iter().enumerate() {
         let player_area = bg_chunks[i];
         if player == &&state.player_name {
+            let selected_card = match state.input_state {
+                GameInputState::SelectingRank { cursor: index, .. } => Some(index),
+                _ => None,
+            };
             f.render_widget(Clear, player_area);
-            render_local_player_strip(f, &state, player_area);
+            f.render_widget(widgets::PlayerStripWidget::Local {
+                hand: &state.hand,
+                selected_card,
+                is_active: state.active_player == state.player_name,
+                book_count: state.completed_books.len(),
+            }, player_area);
         } else {
             let hand_size = state.opponent_card_counts.get(*player).unwrap_or(&0);
             let book_count = state.opponent_book_counts.get(*player).unwrap_or(&0);
             let highlighted = match state.input_state {
                 GameInputState::SelectingTarget { cursor: c } => {
-                    let selected_name = opponents.get(c).map_or("", |name| name);
-                    selected_name == *player
+                    opponents.get(c).map_or("", |name| name) == *player
                 },
                 _ => false,
             };
             let is_active = state.active_player == **player;
             f.render_widget(Clear, player_area);
-            render_opponent_player_strip(f, player, *hand_size, *book_count, player_area, highlighted, is_active);
+            f.render_widget(widgets::PlayerStripWidget::Opponent {
+                player_name: player,
+                hand_size: *hand_size,
+                book_count: *book_count,
+                highlighted,
+                is_active,
+            }, player_area);
         }
     }
 
@@ -261,90 +275,6 @@ pub fn render(f: &mut Frame, app: &AppState) {
 
 
 
-fn render_local_player_strip(f: &mut Frame, game_state: &GameState, area: Rect) {
-    let hand = &game_state.hand;
-    let books = &game_state.completed_books;
-    let highlighted = game_state.active_player == game_state.player_name;
-    let selected_card = match game_state.input_state {
-        GameInputState::SelectingRank { target: _, cursor: index } => Some(index),
-        _ => None,
-    };
-
-    let border_style = if highlighted {
-        Style::new().green()
-    } else {
-        Style::default()
-    };
-
-    let you_title = Span::styled("you", Style::default().fg(Color::Green));
-    let hand_block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(border_style)
-        .title(you_title);
-
-    let strip_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(CARD_WIDTH), Constraint::Fill(1), Constraint::Length(14)])
-        .split(hand_block.inner(area));
-
-    let con = hand.books.iter().map(|book| Constraint::Length(6 + (book.cards.len()) as u16)).collect::<Vec<_>>();
-    let cards_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints(con)
-        .split(strip_chunks[1]);
-
-    // Render turn indicator
-    f.render_widget(widgets::TurnIndicatorWidget { is_active: highlighted }, strip_chunks[0]);
-
-    // Render cards
-    for (i, book) in hand.books.iter().enumerate() {
-        let h = selected_card.map(|j| j == i).unwrap_or(false);
-        f.render_widget(widgets::IncompleteBookWidget { book, highlighted: h }, cards_chunks[i]);
-    }
-
-    // Render completed books
-    let completed_books = Line::from(vec![Span::styled(format!("{} books", books.len()), Style::default().fg(Color::White))]);
-    f.render_widget(completed_books, strip_chunks[2]);
-
-    f.render_widget(hand_block, area);
-}
-
-fn render_opponent_player_strip(f: &mut Frame, name: &str, hand_size: usize, books: usize, area: Rect, highlighted: bool, is_active: bool) {
-    let strip_border = if highlighted {
-        Style::default().fg(Color::Yellow)
-    } else {
-        Style::default().fg(Color::White)
-    };
-    let hand_block = Block::default()
-        .borders(Borders::ALL)
-        .style(strip_border)
-        .title(name);
-
-    let strip_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(CARD_WIDTH), Constraint::Fill(1), Constraint::Length(14)])
-        .split(hand_block.inner(area));
-
-    let con = (0..hand_size).map(|_| Constraint::Length(CARD_WIDTH)).collect::<Vec<_>>();
-    let cards_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints(con)
-        .split(strip_chunks[1]);
-
-    // Render turn indicator
-    f.render_widget(widgets::TurnIndicatorWidget { is_active }, strip_chunks[0]);
-
-    // Render cards
-    for i in 0..hand_size {
-        f.render_widget(widgets::CardWidget::FaceDown { highlighted: false }, cards_chunks[i]);
-    }
-
-    // Render completed books
-    let completed_books = Line::from(vec![Span::styled(format!("{} books", books), Style::default().fg(Color::White))]);
-    f.render_widget(completed_books, strip_chunks[2]);
-
-    f.render_widget(hand_block, area);
-}
 
 fn render_status_bar(f: &mut Frame, state: &GameState, area: Rect) {
     let status = Paragraph::new(status_message(state));
@@ -352,11 +282,12 @@ fn render_status_bar(f: &mut Frame, state: &GameState, area: Rect) {
 }
 
 mod widgets {
-    use go_fish::{Card, IncompleteBook, Rank, Suit};
+    use go_fish::{Card, Hand, IncompleteBook, Rank, Suit};
     use ratatui::{
         buffer::Buffer,
-        layout::{Margin, Rect},
+        layout::{Constraint, Direction, Layout, Margin, Rect},
         style::{Color, Style},
+        text::{Line, Span},
         widgets::{Block, Borders, Clear, Widget},
     };
 
@@ -455,6 +386,98 @@ mod widgets {
                 buf.set_string(area.x + 4, area.y + 3, suit_sym, Style::default().fg(suit_col));
             }
         }
+    }
+
+    pub(super) enum PlayerStripWidget<'a> {
+        Local {
+            hand: &'a Hand,
+            selected_card: Option<usize>,
+            is_active: bool,
+            book_count: usize,
+        },
+        Opponent {
+            player_name: &'a str,
+            hand_size: usize,
+            highlighted: bool,
+            is_active: bool,
+            book_count: usize,
+        },
+    }
+
+    impl Widget for PlayerStripWidget<'_> {
+        fn render(self, area: Rect, buf: &mut Buffer) {
+            match self {
+                PlayerStripWidget::Local { hand, selected_card, is_active, book_count } =>
+                    render_local(hand, selected_card, is_active, book_count, area, buf),
+                PlayerStripWidget::Opponent { player_name, hand_size, highlighted, is_active, book_count } =>
+                    render_opponent(player_name, hand_size, highlighted, is_active, book_count, area, buf),
+            }
+        }
+    }
+
+    fn render_local(hand: &Hand, selected_card: Option<usize>, is_active: bool, book_count: usize, area: Rect, buf: &mut Buffer) {
+        let border_style = if is_active { Style::default().fg(Color::Green) } else { Style::default() };
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(border_style)
+            .title(Span::styled("you", Style::default().fg(Color::Green)));
+
+        let strip_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(super::CARD_WIDTH), Constraint::Fill(1), Constraint::Length(14)])
+            .split(block.inner(area));
+
+        TurnIndicatorWidget { is_active }.render(strip_chunks[0], buf);
+
+        let con = hand.books.iter()
+            .map(|b| Constraint::Length((super::CARD_WIDTH - 1) + b.cards.len() as u16))
+            .collect::<Vec<_>>();
+        let cards_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints(con)
+            .split(strip_chunks[1]);
+        for (i, book) in hand.books.iter().enumerate() {
+            let highlighted = selected_card.map(|j| j == i).unwrap_or(false);
+            IncompleteBookWidget { book, highlighted }.render(cards_chunks[i], buf);
+        }
+
+        Line::from(vec![Span::styled(format!("{} books", book_count), Style::default().fg(Color::White))])
+            .render(strip_chunks[2], buf);
+
+        block.render(area, buf);
+    }
+
+    fn render_opponent(player_name: &str, hand_size: usize, highlighted: bool, is_active: bool, book_count: usize, area: Rect, buf: &mut Buffer) {
+        let border_style = if highlighted {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .style(border_style)
+            .title(player_name);
+
+        let strip_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(super::CARD_WIDTH), Constraint::Fill(1), Constraint::Length(14)])
+            .split(block.inner(area));
+
+        TurnIndicatorWidget { is_active }.render(strip_chunks[0], buf);
+
+        let con = (0..hand_size).map(|_| Constraint::Length(super::CARD_WIDTH)).collect::<Vec<_>>();
+        let cards_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints(con)
+            .split(strip_chunks[1]);
+        for i in 0..hand_size {
+            CardWidget::FaceDown { highlighted: false }.render(cards_chunks[i], buf);
+        }
+
+        Line::from(vec![Span::styled(format!("{} books", book_count), Style::default().fg(Color::White))])
+            .render(strip_chunks[2], buf);
+
+        block.render(area, buf);
     }
 }
 
