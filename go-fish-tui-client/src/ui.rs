@@ -4,7 +4,7 @@ use crate::state::{GameInputState, GameState};
 use go_fish::HookResult;
 use go_fish_web::HookError;
 use go_fish_web::HookOutcome;
-use ratatui::layout::{Flex, Margin, Rect};
+use ratatui::layout::{Flex, Rect};
 use ratatui::prelude::Stylize;
 use ratatui::style::Modifier;
 use ratatui::text::Line;
@@ -260,23 +260,6 @@ pub fn render(f: &mut Frame, app: &AppState) {
 
 
 
-fn render_turn_indicator(f: &mut Frame, area: Rect, is_active: bool) {
-    let x = area.x + (area.width.saturating_sub(5)) / 2;
-    let y = area.y + (area.height.saturating_sub(3)) / 2;
-    let indicator = Rect { x, y, width: 5.min(area.width), height: 3.min(area.height) };
-
-    f.render_widget(Block::default().borders(Borders::ALL), indicator);
-
-    if is_active {
-        let inner = indicator.inner(Margin { horizontal: 1, vertical: 1 });
-        let buf = f.buffer_mut();
-        for row in inner.top()..inner.bottom() {
-            for col in inner.left()..inner.right() {
-                buf[(col, row)].set_char('█');
-            }
-        }
-    }
-}
 
 fn render_local_player_strip(f: &mut Frame, game_state: &GameState, area: Rect) {
     let hand = &game_state.hand;
@@ -311,7 +294,7 @@ fn render_local_player_strip(f: &mut Frame, game_state: &GameState, area: Rect) 
         .split(strip_chunks[1]);
 
     // Render turn indicator
-    render_turn_indicator(f, strip_chunks[0], highlighted);
+    f.render_widget(widgets::TurnIndicatorWidget { is_active: highlighted }, strip_chunks[0]);
 
     // Render cards
     for (i, book) in hand.books.iter().enumerate() {
@@ -349,7 +332,7 @@ fn render_opponent_player_strip(f: &mut Frame, name: &str, hand_size: usize, boo
         .split(strip_chunks[1]);
 
     // Render turn indicator
-    render_turn_indicator(f, strip_chunks[0], is_active);
+    f.render_widget(widgets::TurnIndicatorWidget { is_active }, strip_chunks[0]);
 
     // Render cards
     for i in 0..hand_size {
@@ -372,7 +355,7 @@ mod widgets {
     use go_fish::{Card, IncompleteBook, Rank, Suit};
     use ratatui::{
         buffer::Buffer,
-        layout::Rect,
+        layout::{Margin, Rect},
         style::{Color, Style},
         widgets::{Block, Borders, Clear, Widget},
     };
@@ -414,6 +397,27 @@ mod widgets {
     pub(super) enum CardWidget<'a> {
         FaceDown { highlighted: bool },
         FaceUp { card: &'a Card, highlighted: bool },
+    }
+
+    pub(super) struct TurnIndicatorWidget {
+        pub is_active: bool,
+    }
+
+    impl Widget for TurnIndicatorWidget {
+        fn render(self, area: Rect, buf: &mut Buffer) {
+            let x = area.x + (area.width.saturating_sub(5)) / 2;
+            let y = area.y + (area.height.saturating_sub(3)) / 2;
+            let indicator = Rect { x, y, width: 5.min(area.width), height: 3.min(area.height) };
+            Block::default().borders(Borders::ALL).render(indicator, buf);
+            if self.is_active {
+                let inner = indicator.inner(Margin { horizontal: 1, vertical: 1 });
+                for row in inner.top()..inner.bottom() {
+                    for col in inner.left()..inner.right() {
+                        buf[(col, row)].set_char('█');
+                    }
+                }
+            }
+        }
     }
 
     pub(super) struct IncompleteBookWidget<'a> {
