@@ -2,19 +2,16 @@ use crate::state::PreLobbyInputState;
 use crate::state::{AppState, ConnectingState, LobbyState, PreLobbyState, Screen};
 use crate::state::{GameInputState, GameState};
 use go_fish::HookResult;
-use go_fish::Rank;
-use go_fish::Suit;
-use go_fish::{Card, IncompleteBook};
+use go_fish::IncompleteBook;
 use go_fish_web::HookError;
 use go_fish_web::HookOutcome;
-use ratatui::buffer::Buffer;
 use ratatui::layout::{Flex, Margin, Rect};
 use ratatui::prelude::Stylize;
 use ratatui::style::Modifier;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Padding;
-use ratatui::widgets::{Clear, Widget};
+use ratatui::widgets::Clear;
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout},
     style::{Color, Style},
@@ -262,30 +259,12 @@ pub fn render(f: &mut Frame, app: &AppState) {
     }
 }
 
-fn render_card_border(f: &mut Frame, area: Rect, highlighted: bool) {
-    let rect = Rect::new(area.x, area.y, CARD_WIDTH, CARD_HEIGHT);
-    let col = if highlighted { Color::Yellow } else { Color::White };
-    let block = Block::default().borders(Borders::ALL).style(Style::default().fg(col));
-    f.render_widget(block, rect);
-}
-
-fn render_card_interior(f: &mut Frame, area: Rect, card: &Card) {
-    let buf = f.buffer_mut();
-    let suit_symbol = suit_symbol(card.suit);
-    let suit_col = suit_colour(card.suit);
-    let rank = rank_short(card.rank);
-
-    buf.set_string(area.x + 2, area.y + 1, suit_symbol, Style::default().fg(suit_col));
-    buf.set_string(area.x + 3, area.y + 2, rank, Style::default().fg(Color::White));
-    buf.set_string(area.x + 4, area.y + 3, suit_symbol, Style::default().fg(suit_col));
-}
 
 fn render_book(f: &mut Frame, area: Rect, book: &IncompleteBook, highlighted: bool) {
     for (i, card) in book.cards.iter().enumerate() {
         let rect = Rect::new(area.x + (i as u16), area.y, CARD_WIDTH, CARD_HEIGHT);
         f.render_widget(Clear, rect);
-        render_card_border(f, rect, highlighted);
-        render_card_interior(f, rect, card);
+        f.render_widget(widgets::CardWidget::FaceUp { card, highlighted }, rect);
     }
 }
 
@@ -382,7 +361,7 @@ fn render_opponent_player_strip(f: &mut Frame, name: &str, hand_size: usize, boo
 
     // Render cards
     for i in 0..hand_size {
-        render_card_border(f, cards_chunks[i], false);
+        f.render_widget(widgets::CardWidget::FaceDown { highlighted: false }, cards_chunks[i]);
     }
 
     // Render completed books
@@ -397,38 +376,74 @@ fn render_status_bar(f: &mut Frame, state: &GameState, area: Rect) {
     f.render_widget(status, area);
 }
 
-// Card rendering helper functions
-fn rank_short(rank: Rank) -> &'static str {
-    match rank {
-        Rank::Two => "2",
-        Rank::Three => "3",
-        Rank::Four => "4",
-        Rank::Five => "5",
-        Rank::Six => "6",
-        Rank::Seven => "7",
-        Rank::Eight => "8",
-        Rank::Nine => "9",
-        Rank::Ten => "10",
-        Rank::Jack => "J",
-        Rank::Queen => "Q",
-        Rank::King => "K",
-        Rank::Ace => "A"
-    }
-}
+mod widgets {
+    use go_fish::{Card, Rank, Suit};
+    use ratatui::{
+        buffer::Buffer,
+        layout::Rect,
+        style::{Color, Style},
+        widgets::{Block, Borders, Widget},
+    };
 
-fn suit_symbol(suit: Suit) -> &'static str {
-    match suit {
-        Suit::Spades => "♠",
-        Suit::Hearts => "♥",
-        Suit::Diamonds => "♦",
-        Suit::Clubs => "♣"
+    pub(super) fn rank_short(rank: Rank) -> &'static str {
+        match rank {
+            Rank::Two => "2",
+            Rank::Three => "3",
+            Rank::Four => "4",
+            Rank::Five => "5",
+            Rank::Six => "6",
+            Rank::Seven => "7",
+            Rank::Eight => "8",
+            Rank::Nine => "9",
+            Rank::Ten => "10",
+            Rank::Jack => "J",
+            Rank::Queen => "Q",
+            Rank::King => "K",
+            Rank::Ace => "A",
+        }
     }
-}
 
-fn suit_colour(suit: Suit) -> Color {
-    match suit {
-        Suit::Hearts | Suit::Diamonds => Color::Red,
-        Suit::Spades | Suit::Clubs => Color::White,
+    pub(super) fn suit_symbol(suit: Suit) -> &'static str {
+        match suit {
+            Suit::Spades => "♠",
+            Suit::Hearts => "♥",
+            Suit::Diamonds => "♦",
+            Suit::Clubs => "♣",
+        }
+    }
+
+    pub(super) fn suit_colour(suit: Suit) -> Color {
+        match suit {
+            Suit::Hearts | Suit::Diamonds => Color::Red,
+            Suit::Spades | Suit::Clubs => Color::White,
+        }
+    }
+
+    pub(super) enum CardWidget<'a> {
+        FaceDown { highlighted: bool },
+        FaceUp { card: &'a Card, highlighted: bool },
+    }
+
+    impl Widget for CardWidget<'_> {
+        fn render(self, area: Rect, buf: &mut Buffer) {
+            let (highlighted, card) = match self {
+                CardWidget::FaceDown { highlighted } => (highlighted, None),
+                CardWidget::FaceUp { card, highlighted } => (highlighted, Some(card)),
+            };
+            let col = if highlighted { Color::Yellow } else { Color::White };
+            Block::default()
+                .borders(Borders::ALL)
+                .style(Style::default().fg(col))
+                .render(area, buf);
+            if let Some(card) = card {
+                let suit_sym = suit_symbol(card.suit);
+                let suit_col = suit_colour(card.suit);
+                let rank = rank_short(card.rank);
+                buf.set_string(area.x + 2, area.y + 1, suit_sym, Style::default().fg(suit_col));
+                buf.set_string(area.x + 3, area.y + 2, rank, Style::default().fg(Color::White));
+                buf.set_string(area.x + 4, area.y + 3, suit_sym, Style::default().fg(suit_col));
+            }
+        }
     }
 }
 
@@ -440,7 +455,7 @@ fn status_message(game_state: &'_ GameState) -> Line<'_> {
 }
 
 fn hook_outcome_message<'a>(outcome: &HookOutcome, local_name: &str) -> Line<'a> {
-    let rank = rank_short(outcome.rank);
+    let rank = widgets::rank_short(outcome.rank);
     match &outcome.result {
         HookResult::Catch(book) => {
             Line::from(vec![
