@@ -15,7 +15,7 @@
 //!
 //! // Current player takes a turn
 //! let hook = Hook {
-//!     target: PlayerId(1),
+//!     target: PlayerId::new(1),
 //!     rank: Rank::Ace,
 //! };
 //!
@@ -53,6 +53,7 @@ pub enum Suit {
     Debug,
     PartialEq,
     Eq,
+    Hash,
     Sequence,
     Clone,
     Copy,
@@ -192,6 +193,10 @@ impl Deck {
         self.cards.is_empty()
     }
 
+    pub fn len(&self) -> usize {
+        self.cards.len()
+    }
+
     /// Draws a card from the deck´
     /// ```
     /// use go_fish::Deck;
@@ -270,6 +275,15 @@ pub struct GameResult {
 pub enum HookResult {
     Catch(IncompleteBook),
     GoFish,
+}
+
+/// The full outcome of a [take_turn](Game::take_turn) call, including who fished, who was targeted, what rank was requested, and whether the catch succeeded.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct HookOutcome {
+    pub fisher: PlayerId,
+    pub target: PlayerId,
+    pub rank: Rank,
+    pub result: HookResult,
 }
 
 impl Hand {
@@ -358,7 +372,7 @@ impl Game {
     }
 
     /// Take a turn in the game
-    pub fn take_turn(&mut self, hook: Hook) -> Result<HookResult, TurnError> {
+    pub fn take_turn(&mut self, hook: Hook) -> Result<HookOutcome, TurnError> {
         debug!(game.players = ?self.players,
             game.inactive_players = ?self.inactive_players,
             game.is_deck_empty = self.deck.is_empty(),
@@ -375,6 +389,7 @@ impl Game {
 
         let (mut fisher, target) =
             Self::find_hook_players(&mut self.players, self.player_turn, hook.target);
+        let fisher_id = fisher.id;
 
         let mut target = match target {
             Some(target) => target,
@@ -441,7 +456,7 @@ impl Game {
             game.is_finished = self.is_finished,
             "Finished taking turn");
 
-        Ok(result)
+        Ok(HookOutcome { fisher: fisher_id, target: hook.target, rank: hook.rank, result })
     }
 
     /// Get the current player
@@ -607,6 +622,9 @@ enum PlayerEmptyHandOutcome {
     Active(Player),
     Inactive(InactivePlayer),
 }
+
+#[cfg(feature = "bots")]
+pub mod bots;
 
 #[cfg(test)]
 mod game_tests;
