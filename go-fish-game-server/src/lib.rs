@@ -55,9 +55,9 @@ pub async fn run(config: Config) -> Result<(), anyhow::Error> {
     let command_tx = manager.command_tx();
 
     let bot_config = config.bots.unwrap_or(BotConfig {
-        thinking_time_min_ms: 800,
-        thinking_time_max_ms: 2500,
-        simple_bot: SimpleBotConfig { memory_limit: 5, error_margin: 0.15 },
+        thinking_time_min_ms: 2000,
+        thinking_time_max_ms: 4500,
+        simple_bot: SimpleBotConfig { memory_limit: 3, error_margin: 0.2 },
     });
 
     let lobby_manager = LobbyManager::new(
