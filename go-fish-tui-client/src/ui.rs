@@ -166,7 +166,7 @@ mod render {
             .map(|p| {
                 let display_name = match p {
                     go_fish_web::LobbyPlayer::Human { name } => name.clone(),
-                    go_fish_web::LobbyPlayer::Bot { name, .. } => format!("{} [BOT]", name),
+                    go_fish_web::LobbyPlayer::Bot { name, .. } => name.clone(),
                 };
                 let str = if p.name() == state.leader {
                     format!("★ {}", display_name)

@@ -503,7 +503,7 @@ impl LobbyManager {
                     return;
                 }
 
-                let bot_name = format!("Bot {}", bot_count + 1);
+                let bot_name = format!("{} [{}]", random_fish_name(), bot_type);
                 if let Some(lobby) = self.lobbies.get_mut(&lobby_id)
                     && let LobbyState::Waiting { pending_bots, .. } = &mut lobby.state {
                         pending_bots.push(BotSlot { name: bot_name, bot_type });

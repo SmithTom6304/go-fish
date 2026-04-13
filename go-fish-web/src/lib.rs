@@ -6,11 +6,20 @@ use go_fish::Rank;
 use go_fish::{CompleteBook, Hand, HookResult};
 use serde::Deserialize;
 use serde::Serialize;
+use std::fmt::Display;
 
 /// The type of bot that can be added to a lobby.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub enum BotType {
     SimpleBot,
+}
+
+impl Display for BotType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BotType::SimpleBot => write!(f, "SimpleBot"),
+        }
+    }
 }
 
 /// A player slot in a lobby — either a human or a bot.
