@@ -131,9 +131,12 @@ mod render {
     fn render_lobby(f: &mut Frame, state: &LobbyState) {
         let area = f.area();
 
-        let can_start = state.players.len() >= 2 && state.leader == state.player_name;
+        let is_leader = state.leader == state.player_name;
+        let can_start = state.players.len() >= 2 && is_leader;
         let hints = if can_start {
-            "[s] Start game [q] Leave lobby"
+            "[s] Start  [a] Add bot  [d] Remove bot  [q] Leave lobby"
+        } else if is_leader {
+            "[a] Add bot  [d] Remove bot  [q] Leave lobby"
         } else {
             "[q] Leave lobby"
         };
@@ -161,12 +164,16 @@ mod render {
             .players
             .iter()
             .map(|p| {
-                let str = if p == &state.leader {
-                    format!("★ {}", p)
-                } else {
-                    format!("  {}", p)
+                let display_name = match p {
+                    go_fish_web::LobbyPlayer::Human { name } => name.clone(),
+                    go_fish_web::LobbyPlayer::Bot { name, .. } => format!("{} [BOT]", name),
                 };
-                let style = if p == &state.player_name {
+                let str = if p.name() == state.leader {
+                    format!("★ {}", display_name)
+                } else {
+                    format!("  {}", display_name)
+                };
+                let style = if p.name() == state.player_name {
                     Style::default().fg(Color::Green)
                 } else {
                     Style::default()
@@ -293,6 +300,7 @@ mod render {
         }
     }
 
+    #[allow(dead_code)]
     fn hook_error_message(err: &HookError) -> String {
         match err {
             HookError::NotYourTurn => "Not your turn".to_string(),

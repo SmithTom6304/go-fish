@@ -169,7 +169,7 @@ mod tests {
     use proptest::prelude::*;
     use go_fish::Rank;
     use go_fish_web::{
-        ClientMessage, ClientHookRequest,
+        BotType, ClientMessage, ClientHookRequest, LobbyPlayer,
         ServerMessage, HookAndResult, HookError, HandState, PlayerTurnValue,
         FullHookRequest, GameResult, GameSnapshot, HookOutcome, OpponentState,
     };
@@ -229,6 +229,17 @@ mod tests {
             .prop_map(|(target_name, rank)| ClientHookRequest { target_name, rank })
     }
 
+    fn bot_type_strategy() -> impl Strategy<Value = BotType> {
+        Just(BotType::SimpleBot)
+    }
+
+    fn lobby_player_strategy() -> impl Strategy<Value = LobbyPlayer> {
+        prop_oneof![
+            "[a-zA-Z0-9]{1,16}".prop_map(|name| LobbyPlayer::Human { name }),
+            "[a-zA-Z0-9]{1,16}".prop_map(|name| LobbyPlayer::Bot { name, bot_type: BotType::SimpleBot }),
+        ]
+    }
+
     fn client_message_strategy() -> impl Strategy<Value = ClientMessage> {
         prop_oneof![
             client_hook_request_strategy().prop_map(ClientMessage::Hook),
@@ -237,6 +248,8 @@ mod tests {
             "[a-zA-Z0-9]{1,16}".prop_map(ClientMessage::JoinLobby),
             Just(()).prop_map(|_| ClientMessage::LeaveLobby),
             Just(()).prop_map(|_| ClientMessage::StartGame),
+            bot_type_strategy().prop_map(|bot_type| ClientMessage::AddBot { bot_type }),
+            Just(()).prop_map(|_| ClientMessage::RemoveBot),
         ]
     }
 
@@ -288,10 +301,13 @@ mod tests {
     }
 
     fn opponent_state_strategy() -> impl Strategy<Value = OpponentState> {
-        ("[a-zA-Z0-9]{1,16}", 0usize..=13usize, 0usize..=13usize)
-            .prop_map(|(name, card_count, completed_book_count)| OpponentState {
-                name, card_count, completed_book_count,
-            })
+        (
+            "[a-zA-Z0-9]{1,16}",
+            0usize..=13usize,
+            prop::collection::vec(complete_book_strategy(), 0..=4),
+        ).prop_map(|(name, card_count, completed_books)| OpponentState {
+            name, card_count, completed_books,
+        })
     }
 
     fn game_snapshot_strategy() -> impl Strategy<Value = GameSnapshot> {
@@ -300,8 +316,9 @@ mod tests {
             prop::collection::vec(opponent_state_strategy(), 0..=3),
             "[a-zA-Z0-9]{1,16}",
             prop::option::of(hook_outcome_strategy()),
-        ).prop_map(|(hand_state, opponents, active_player, last_hook_outcome)| GameSnapshot {
-            hand_state, opponents, active_player, last_hook_outcome,
+            0usize..=52usize,
+        ).prop_map(|(hand_state, opponents, active_player, last_hook_outcome, deck_size)| GameSnapshot {
+            hand_state, opponents, active_player, last_hook_outcome, deck_size,
         })
     }
 
@@ -316,14 +333,14 @@ mod tests {
             (
                 "[a-zA-Z0-9]{1,16}",
                 "[a-zA-Z0-9]{1,16}",
-                prop::collection::vec("[a-zA-Z0-9]{1,16}", 0..=4),
+                prop::collection::vec(lobby_player_strategy(), 0..=4),
                 1usize..=8usize,
             ).prop_map(|(lobby_id, leader, players, max_players)| ServerMessage::LobbyJoined {
                 lobby_id, leader, players, max_players,
             }),
             (
                 "[a-zA-Z0-9]{1,16}",
-                prop::collection::vec("[a-zA-Z0-9]{1,16}", 0..=4),
+                prop::collection::vec(lobby_player_strategy(), 0..=4),
             ).prop_map(|(leader, players)| ServerMessage::LobbyUpdated { leader, players }),
             Just(()).prop_map(|_| ServerMessage::GameStarted),
             "[a-zA-Z0-9 ]{1,32}".prop_map(ServerMessage::Error),
@@ -365,6 +382,22 @@ mod tests {
         ) {
             let result = serde_json::from_str::<go_fish_web::ServerMessage>(&s);
             prop_assert!(result.is_err());
+        }
+
+        #[test]
+        fn prop_bot_type_round_trip(bot_type in bot_type_strategy()) {
+            let json = serde_json::to_string(&bot_type).unwrap();
+            let back: BotType = serde_json::from_str(&json).unwrap();
+            let json2 = serde_json::to_string(&back).unwrap();
+            prop_assert_eq!(json, json2);
+        }
+
+        #[test]
+        fn prop_lobby_player_round_trip(player in lobby_player_strategy()) {
+            let json = serde_json::to_string(&player).unwrap();
+            let back: LobbyPlayer = serde_json::from_str(&json).unwrap();
+            let json2 = serde_json::to_string(&back).unwrap();
+            prop_assert_eq!(json, json2);
         }
 
         #[test]

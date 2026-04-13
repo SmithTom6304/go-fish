@@ -12,7 +12,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            server_url: "wss://terminaltom.com/go-fish/game-server".to_string(),
+            server_url: "ws://127.0.0.1:9001".to_string(),
         }
     }
 }

@@ -1,11 +1,33 @@
 //! # go-fish-web
-//! 
+//!
 //! `go-fish-web` provides the protocol message types used by the `go-fish` web client and server.
 
 use go_fish::Rank;
 use go_fish::{CompleteBook, Hand, HookResult};
 use serde::Deserialize;
 use serde::Serialize;
+
+/// The type of bot that can be added to a lobby.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub enum BotType {
+    SimpleBot,
+}
+
+/// A player slot in a lobby — either a human or a bot.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub enum LobbyPlayer {
+    Human { name: String },
+    Bot { name: String, bot_type: BotType },
+}
+
+impl LobbyPlayer {
+    pub fn name(&self) -> &str {
+        match self {
+            LobbyPlayer::Human { name } => name,
+            LobbyPlayer::Bot { name, .. } => name,
+        }
+    }
+}
 
 /// Messages sent from the client to the server.
 #[derive(Debug, Serialize, Deserialize)]
@@ -16,6 +38,8 @@ pub enum ClientMessage {
     JoinLobby(String),
     LeaveLobby,
     StartGame,
+    AddBot { bot_type: BotType },
+    RemoveBot,
 }
 
 /// Messages sent from the server to the client.
@@ -30,16 +54,17 @@ pub enum ServerMessage {
     LobbyJoined {
         lobby_id: String,
         leader: String,
-        players: Vec<String>,
+        players: Vec<LobbyPlayer>,
         max_players: usize,
     },
     LobbyUpdated {
         leader: String,
-        players: Vec<String>,
+        players: Vec<LobbyPlayer>,
     },
     LobbyLeft(LobbyLeftReason),
     GameStarted,
     GameSnapshot(GameSnapshot),
+    GameAborted,
     Error(String),
 }
 
@@ -105,7 +130,7 @@ pub struct HookOutcome {
 pub struct OpponentState {
     pub name: String,
     pub card_count: usize,
-    pub completed_book_count: usize,
+    pub completed_books: Vec<CompleteBook>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -114,4 +139,5 @@ pub struct GameSnapshot {
     pub opponents: Vec<OpponentState>,
     pub active_player: String,
     pub last_hook_outcome: Option<HookOutcome>,
+    pub deck_size: usize,
 }

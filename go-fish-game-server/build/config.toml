@@ -1,3 +1,11 @@
 address = "0.0.0.0:80"
 lobby_max_players = 4
 max_client_connections = 10
+
+[bots]
+thinking_time_min_ms = 800
+thinking_time_max_ms = 2500
+
+[bots.simple_bot]
+memory_limit = 5
+error_margin = 0.15

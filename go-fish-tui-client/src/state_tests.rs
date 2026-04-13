@@ -4,7 +4,8 @@
 use super::*;
 use go_fish::{Card, CompleteBook, Hand, HookResult, IncompleteBook, Rank, Suit};
 use go_fish_web::{
-    GameResult, GameSnapshot, HandState, HookError, HookOutcome, OpponentState, ServerMessage,
+    BotType, GameResult, GameSnapshot, HandState, HookError, HookOutcome, LobbyPlayer,
+    OpponentState, ServerMessage,
 };
 use proptest::prelude::*;
 
@@ -88,12 +89,15 @@ fn hook_outcome_strategy() -> impl Strategy<Value = HookOutcome> {
 }
 
 fn opponent_state_strategy() -> impl Strategy<Value = OpponentState> {
-    ("[a-zA-Z0-9]{1,16}", 0usize..=13usize, 0usize..=13usize)
-        .prop_map(|(name, card_count, completed_book_count)| OpponentState {
-            name,
-            card_count,
-            completed_book_count,
-        })
+    (
+        "[a-zA-Z0-9]{1,16}",
+        0usize..=13usize,
+        prop::collection::vec(complete_book_strategy(), 0..=4),
+    ).prop_map(|(name, card_count, completed_books)| OpponentState {
+        name,
+        card_count,
+        completed_books,
+    })
 }
 
 fn game_snapshot_strategy() -> impl Strategy<Value = GameSnapshot> {
@@ -102,12 +106,21 @@ fn game_snapshot_strategy() -> impl Strategy<Value = GameSnapshot> {
         prop::collection::vec(opponent_state_strategy(), 0..=3),
         "[a-zA-Z0-9]{1,16}",
         prop::option::of(hook_outcome_strategy()),
-    ).prop_map(|(hand_state, opponents, active_player, last_hook_outcome)| GameSnapshot {
+        0usize..=52usize,
+    ).prop_map(|(hand_state, opponents, active_player, last_hook_outcome, deck_size)| GameSnapshot {
         hand_state,
         opponents,
         active_player,
         last_hook_outcome,
+        deck_size,
     })
+}
+
+fn lobby_player_strategy() -> impl Strategy<Value = LobbyPlayer> {
+    prop_oneof![
+        "[a-zA-Z0-9]{1,16}".prop_map(|name| LobbyPlayer::Human { name }),
+        "[a-zA-Z0-9]{1,16}".prop_map(|name| LobbyPlayer::Bot { name, bot_type: BotType::SimpleBot }),
+    ]
 }
 
 /// Strategy for a LobbyState with at least one player (the local player).
@@ -116,10 +129,10 @@ fn lobby_state_strategy() -> impl Strategy<Value = LobbyState> {
         "[a-zA-Z0-9]{1,16}",
         "[a-zA-Z0-9]{1,16}",
         "[a-zA-Z0-9]{1,16}",
-        prop::collection::vec("[a-zA-Z0-9]{1,16}", 0..=3),
+        prop::collection::vec(lobby_player_strategy(), 0..=3),
         1usize..=8usize,
     ).prop_map(|(player_name, lobby_id, leader, extra_players, max_players)| {
-        let mut players = vec![player_name.clone()];
+        let mut players = vec![LobbyPlayer::Human { name: player_name.clone() }];
         players.extend(extra_players);
         LobbyState {
             player_name,
@@ -187,7 +200,7 @@ proptest! {
     #[test]
     fn prop_game_started_transitions_to_game(lobby in lobby_state_strategy()) {
         let player_name = lobby.player_name.clone();
-        let players = lobby.players.clone();
+        let expected_players: Vec<String> = lobby.players.iter().map(|p| p.name().to_string()).collect();
         let mut state = AppState {
             screen: Screen::Lobby(lobby),
         };
@@ -195,7 +208,7 @@ proptest! {
         match &state.screen {
             Screen::Game(game) => {
                 prop_assert_eq!(&game.player_name, &player_name);
-                prop_assert_eq!(&game.players, &players);
+                prop_assert_eq!(&game.players, &expected_players);
             }
             other => prop_assert!(false, "Expected Screen::Game, got {:?}", other),
         }

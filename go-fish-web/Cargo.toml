@@ -8,6 +8,6 @@ repository = "https://github.com/SmithTom6304/go-fish"
 documentation = "https://docs.rs/go-fish-web"
 
 [dependencies]
-go-fish = { version = "0.1.4" }
+go-fish = { path = "../go-fish" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

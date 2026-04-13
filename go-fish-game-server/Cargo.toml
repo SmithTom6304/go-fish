@@ -12,9 +12,9 @@ anyhow = "1.0.102"
 clap = { version = "4.6.0", features = ["derive"] }
 bytes = "1"
 futures-util = "0.3.32"
-go-fish = { version = "0.1.4" }
-go-fish-web = { version = "0.1.1" }
-rand = "0.9"
+go-fish = { path = "../go-fish", features = ["bots"] }
+go-fish-web = { path = "../go-fish-web" }
+rand = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1.0"
 toml = "1.0.7"

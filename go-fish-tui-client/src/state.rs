@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use go_fish::HookResult;
 use go_fish_web::LobbyLeftReason;
+use go_fish_web::LobbyPlayer;
 use go_fish_web::ServerMessage;
 
 pub use crate::network::NetworkEvent;
@@ -35,7 +36,7 @@ pub struct LobbyState {
     pub player_name: String,
     pub lobby_id: String,
     pub leader: String,
-    pub players: Vec<String>,
+    pub players: Vec<LobbyPlayer>,
     pub max_players: usize,
     pub error: Option<String>,
 }
@@ -155,7 +156,7 @@ fn apply_server_message(state: &mut AppState, msg: &ServerMessage) {
             if let Screen::Lobby(lobby) = &mut state.screen {
                 let player_name = lobby.player_name.clone();
                 // If local player was removed, transition back to PreLobby
-                if !players.contains(&player_name) {
+                if !players.iter().any(|p| p.name() == player_name) {
                     state.screen = Screen::PreLobby(PreLobbyState {
                         player_name,
                         input_state: PreLobbyInputState::None,
@@ -185,7 +186,7 @@ fn apply_server_message(state: &mut AppState, msg: &ServerMessage) {
         ServerMessage::GameStarted => {
             if let Screen::Lobby(lobby) = &state.screen {
                 let player_name = lobby.player_name.clone();
-                let players = lobby.players.clone();
+                let players: Vec<String> = lobby.players.iter().map(|p| p.name().to_string()).collect();
                 state.screen = Screen::Game(GameState::new(player_name, players));
             }
         }
@@ -197,7 +198,7 @@ fn apply_server_message(state: &mut AppState, msg: &ServerMessage) {
                 game.completed_books = snapshot.hand_state.completed_books.clone();
                 for opp in &snapshot.opponents {
                     game.opponent_card_counts.insert(opp.name.clone(), opp.card_count);
-                    game.opponent_book_counts.insert(opp.name.clone(), opp.completed_book_count);
+                    game.opponent_book_counts.insert(opp.name.clone(), opp.completed_books.len());
                 }
                 if let Some(ref outcome) = snapshot.last_hook_outcome {
                     if outcome.target_name == game.player_name {
@@ -225,6 +226,16 @@ fn apply_server_message(state: &mut AppState, msg: &ServerMessage) {
         ServerMessage::GameResult(result) => {
             if let Screen::Game(game) = &mut state.screen {
                 game.game_result = Some(result.clone());
+            }
+        }
+        ServerMessage::GameAborted => {
+            if let Screen::Game(game) = &state.screen {
+                let player_name = game.player_name.clone();
+                state.screen = Screen::PreLobby(PreLobbyState {
+                    player_name,
+                    input_state: PreLobbyInputState::None,
+                    error: Some("Game aborted: a player disconnected.".to_string()),
+                });
             }
         }
         ServerMessage::Error(msg) => {

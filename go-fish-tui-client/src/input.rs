@@ -133,11 +133,18 @@ pub fn handle_key(
             }
         }
         Screen::Lobby(lobby) => {
+            let is_leader = lobby.leader == lobby.player_name;
             if input.key == Key::Char('s')
                 && lobby.players.len() >= 2
-                && lobby.leader == lobby.player_name
+                && is_leader
             {
                 let _ = client_msg_tx.try_send(ClientMessage::StartGame);
+            } else if input.key == Key::Char('a') && is_leader {
+                let _ = client_msg_tx.try_send(ClientMessage::AddBot {
+                    bot_type: go_fish_web::BotType::SimpleBot,
+                });
+            } else if input.key == Key::Char('d') && is_leader {
+                let _ = client_msg_tx.try_send(ClientMessage::RemoveBot);
             } else if input.key == Key::Char('q') {
                 let _ = client_msg_tx.try_send(ClientMessage::LeaveLobby);
             }

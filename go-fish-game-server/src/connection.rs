@@ -47,15 +47,22 @@ pub struct ClientHandle {
 
 #[derive(Debug)]
 pub enum LobbyEvent {
-    ClientConnected { address: SocketAddr },
+    /// A new client has connected and been assigned a per-client outbound channel.
+    ClientConnected {
+        address: SocketAddr,
+        /// Sender half of the client's outbound channel. LobbyManager owns this for
+        /// the lifetime of the connection and passes it to game participants at start.
+        message_tx: mpsc::Sender<go_fish_web::ServerMessage>,
+    },
     ClientMessage { address: SocketAddr, message: go_fish_web::ClientMessage },
     ClientDisconnected { address: SocketAddr, reason: DisconnectReason },
-}
-
-#[derive(Debug)]
-pub struct LobbyOutboundMessage {
-    pub address: SocketAddr,
-    pub message: go_fish_web::ServerMessage,
+    /// A hook submitted on behalf of a game participant (human or bot).
+    /// The lobby manager processes this uniformly regardless of source.
+    Hook {
+        lobby_id: String,
+        player_name: String,
+        request: go_fish_web::ClientHookRequest,
+    },
 }
 
 // ── Connection handler ────────────────────────────────────────────────────────
@@ -171,7 +178,6 @@ where
     command_rx: mpsc::Receiver<ManagerCommand>,
     command_tx: mpsc::Sender<ManagerCommand>,
     lobby_tx: mpsc::Sender<LobbyEvent>,
-    lobby_outbound_rx: mpsc::Receiver<LobbyOutboundMessage>,
 }
 
 impl<S> ConnectionManager<S>
@@ -180,7 +186,6 @@ where
 {
     pub fn new(
         lobby_tx: mpsc::Sender<LobbyEvent>,
-        lobby_outbound_rx: mpsc::Receiver<LobbyOutboundMessage>,
         max_client_connections: usize,
     ) -> Self {
         let (event_tx, event_rx) = mpsc::channel::<ClientEvent<S>>(64);
@@ -193,7 +198,6 @@ where
             command_rx,
             command_tx,
             lobby_tx,
-            lobby_outbound_rx,
         }
     }
 
@@ -207,7 +211,6 @@ where
 
     #[instrument(skip(self))]
     pub async fn run(mut self) {
-        let mut lobby_outbound_closed = false;
         loop {
             tokio::select! {
                 cmd = self.command_rx.recv() => {
@@ -235,14 +238,31 @@ where
                                     "client rejected: max connections reached");
                                 continue;
                             }
+                            // Per-client outbound channel: LobbyManager → serializer → WebSocket
                             let (handler_tx, handler_rx) = mpsc::channel::<ServerMessage>(32);
+                            let (web_tx, mut web_rx) = mpsc::channel::<go_fish_web::ServerMessage>(64);
+                            let serializer_tx = handler_tx.clone();
+                            tokio::spawn(async move {
+                                while let Some(msg) = web_rx.recv().await {
+                                    match serde_json::to_string(&msg) {
+                                        Ok(json) => {
+                                            if serializer_tx.send(ServerMessage::Text(json)).await.is_err() {
+                                                break;
+                                            }
+                                        }
+                                        Err(e) => {
+                                            warn!(error = %e, "failed to serialize outbound message");
+                                        }
+                                    }
+                                }
+                            });
                             self.clients.insert(address, ClientHandle { tx: handler_tx });
                             let event_tx = self.event_tx.clone();
                             tokio::spawn(run_connection_handler(address, ws, event_tx, handler_rx));
                             drop(tx);
                             info!(%address, connections = self.clients.len(),
                                     max_connections = self.max_client_connections, "client connected");
-                            if self.lobby_tx.send(LobbyEvent::ClientConnected { address }).await.is_err() {
+                            if self.lobby_tx.send(LobbyEvent::ClientConnected { address, message_tx: web_tx }).await.is_err() {
                                 warn!(%address, "failed to forward ClientConnected to lobby");
                             }
                         }
@@ -271,30 +291,6 @@ where
                             info!(%address, reason = ?reason, "client disconnected");
                             if self.lobby_tx.send(LobbyEvent::ClientDisconnected { address, reason }).await.is_err() {
                                 warn!(%address, "failed to forward ClientDisconnected to lobby");
-                            }
-                        }
-                    }
-                }
-                outbound = self.lobby_outbound_rx.recv(), if !lobby_outbound_closed => {
-                    match outbound {
-                        None => {
-                            // LobbyManager gone — stop polling this channel
-                            lobby_outbound_closed = true;
-                        }
-                        Some(LobbyOutboundMessage { address, message }) => {
-                            if let Some(handle) = self.clients.get(&address) {
-                                match serde_json::to_string(&message) {
-                                    Ok(json) => {
-                                        if handle.tx.send(ServerMessage::Text(json)).await.is_err() {
-                                            warn!(%address, "failed to deliver outbound message to client handler");
-                                        }
-                                    }
-                                    Err(e) => {
-                                        warn!(%address, error = %e, "failed to serialize outbound message");
-                                    }
-                                }
-                            } else {
-                                warn!(%address, "outbound message for unknown client");
                             }
                         }
                     }
@@ -528,7 +524,6 @@ mod tests {
         mpsc::Sender<ManagerCommand>,
         tokio::task::JoinHandle<()>,
         mpsc::Receiver<LobbyEvent>,
-        mpsc::Sender<LobbyOutboundMessage>,
     ) {
         start_manager_with_limit(2)
     }
@@ -538,16 +533,14 @@ mod tests {
         mpsc::Sender<ManagerCommand>,
         tokio::task::JoinHandle<()>,
         mpsc::Receiver<LobbyEvent>,
-        mpsc::Sender<LobbyOutboundMessage>,
     ) {
         let (lobby_tx, lobby_rx) = mpsc::channel::<LobbyEvent>(64);
-        let (lobby_outbound_tx, lobby_outbound_rx) = mpsc::channel::<LobbyOutboundMessage>(64);
         let manager: ConnectionManager<tokio::io::DuplexStream> =
-            ConnectionManager::new(lobby_tx, lobby_outbound_rx, max_client_connections);
+            ConnectionManager::new(lobby_tx, max_client_connections);
         let event_tx = manager.event_tx();
         let command_tx = manager.command_tx();
         let handle = tokio::spawn(manager.run());
-        (event_tx, command_tx, handle, lobby_rx, lobby_outbound_tx)
+        (event_tx, command_tx, handle, lobby_rx)
     }
 
     // Connect a duplex-backed client to the manager, returning the client-side WS.
@@ -571,7 +564,7 @@ mod tests {
     // -------------------------------------------------------------------------
     #[tokio::test]
     async fn invalid_json_sends_error() {
-        let (event_tx, command_tx, manager_handle, _lobby_rx, _lobby_outbound_tx) = start_manager();
+        let (event_tx, command_tx, manager_handle, _lobby_rx) = start_manager();
         let addr: SocketAddr = "127.0.0.1:10001".parse().unwrap();
 
         let mut client_ws = connect_client(&event_tx, addr).await;
@@ -600,7 +593,7 @@ mod tests {
     // -------------------------------------------------------------------------
     #[tokio::test]
     async fn disconnection_removes_client() {
-        let (event_tx, command_tx, manager_handle, _lobby_rx, _lobby_outbound_tx) = start_manager();
+        let (event_tx, command_tx, manager_handle, _lobby_rx) = start_manager();
         let addr: SocketAddr = "127.0.0.1:10004".parse().unwrap();
 
         let mut client_ws = connect_client(&event_tx, addr).await;
@@ -634,7 +627,7 @@ mod tests {
     // -------------------------------------------------------------------------
     #[tokio::test]
     async fn disconnect_does_not_affect_remaining_clients() {
-        let (event_tx, command_tx, manager_handle, _lobby_rx, _lobby_outbound_tx) = start_manager();
+        let (event_tx, command_tx, manager_handle, _lobby_rx) = start_manager();
         let addr_a: SocketAddr = "127.0.0.1:10005".parse().unwrap();
         let addr_b: SocketAddr = "127.0.0.1:10006".parse().unwrap();
 
@@ -667,10 +660,9 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let (lobby_tx, _lobby_rx) = mpsc::channel::<LobbyEvent>(64);
-        let (_lobby_outbound_tx, lobby_outbound_rx) = mpsc::channel::<LobbyOutboundMessage>(64);
         let max_client_connections = 2;
         let manager: ConnectionManager<tokio::net::TcpStream> =
-            ConnectionManager::new(lobby_tx, lobby_outbound_rx, max_client_connections);
+            ConnectionManager::new(lobby_tx, max_client_connections);
         let event_tx = manager.event_tx();
         let command_tx = manager.command_tx();
         let manager_handle = tokio::spawn(manager.run());
@@ -727,7 +719,7 @@ mod tests {
         ) {
             prop_async!({
                 let addr: SocketAddr = format!("{a}.{b}.{c}.{d}:{port}").parse().unwrap();
-                let (event_tx, command_tx, manager_handle, _lobby_rx, _lobby_outbound_tx) = start_manager();
+                let (event_tx, command_tx, manager_handle, _lobby_rx) = start_manager();
 
                 let mut client_ws = connect_client(&event_tx, addr).await;
                 tokio::time::sleep(Duration::from_millis(10)).await;
@@ -756,7 +748,7 @@ mod tests {
             prop_assume!(serde_json::from_str::<go_fish_web::ClientMessage>(&msg).is_err());
             prop_async!({
                 let addr: SocketAddr = "127.0.0.1:20001".parse().unwrap();
-                let (event_tx, command_tx, manager_handle, _lobby_rx, _lobby_outbound_tx) = start_manager();
+                let (event_tx, command_tx, manager_handle, _lobby_rx) = start_manager();
 
                 let mut client_ws = connect_client(&event_tx, addr).await;
                 tokio::time::sleep(Duration::from_millis(10)).await;
@@ -790,7 +782,7 @@ mod tests {
         fn prop_disconnection_removes_client(_msg in "[a-zA-Z0-9]{1,32}") {
             prop_async!({
                 let addr: SocketAddr = "127.0.0.1:22001".parse().unwrap();
-                let (event_tx, command_tx, manager_handle, _lobby_rx, _lobby_outbound_tx) = start_manager();
+                let (event_tx, command_tx, manager_handle, _lobby_rx) = start_manager();
 
                 let mut client_ws = connect_client(&event_tx, addr).await;
                 tokio::time::sleep(Duration::from_millis(10)).await;
@@ -826,7 +818,7 @@ mod tests {
     // -------------------------------------------------------------------------
     #[tokio::test]
     async fn max_connections_rejects_with_close_frame() {
-        let (event_tx, command_tx, manager_handle, _lobby_rx, _lobby_outbound_tx) =
+        let (event_tx, command_tx, manager_handle, _lobby_rx) =
             start_manager_with_limit(2);
         let addr_a: SocketAddr = "127.0.0.1:11001".parse().unwrap();
         let addr_b: SocketAddr = "127.0.0.1:11002".parse().unwrap();
@@ -859,7 +851,7 @@ mod tests {
     // -------------------------------------------------------------------------
     #[tokio::test]
     async fn max_connections_does_not_affect_existing_clients() {
-        let (event_tx, command_tx, manager_handle, mut lobby_rx, _lobby_outbound_tx) =
+        let (event_tx, command_tx, manager_handle, mut lobby_rx) =
             start_manager_with_limit(1);
         let addr_a: SocketAddr = "127.0.0.1:11004".parse().unwrap();
         let addr_b: SocketAddr = "127.0.0.1:11005".parse().unwrap();
@@ -886,7 +878,7 @@ mod tests {
             .expect("timed out waiting for lobby event")
             .expect("lobby channel closed");
         assert!(
-            matches!(lobby_event, LobbyEvent::ClientConnected { address } if address == addr_a),
+            matches!(lobby_event, LobbyEvent::ClientConnected { address, .. } if address == addr_a),
             "expected ClientConnected for addr_a, got {lobby_event:?}"
         );
 
@@ -903,7 +895,7 @@ mod tests {
         #[test]
         fn prop_max_connections_rejects_excess(limit in 1usize..=3usize) {
             prop_async!({
-                let (event_tx, command_tx, manager_handle, _lobby_rx, _lobby_outbound_tx) =
+                let (event_tx, command_tx, manager_handle, _lobby_rx) =
                     start_manager_with_limit(limit);
 
                 // Fill up to the limit. Hold onto the handles so the connections
