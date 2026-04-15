@@ -1,9 +1,9 @@
 [package]
 name = "go-fish"
 description = "A core engine for the classic Go Fish card game, providing game logic, deck management, and player interactions."
-readme = "../README.md"
+readme = "README.md"
 license = "MIT"
-version = "0.1.4"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.85.0"
 repository = "https://github.com/SmithTom6304/go-fish"

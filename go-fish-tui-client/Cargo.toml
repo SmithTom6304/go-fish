@@ -1,12 +1,12 @@
 [package]
 name = "go-fish-tui-client"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 resolver = "3"
 
 [dependencies]
-go-fish = { path = "../go-fish" }
-go-fish-web = { path = "../go-fish-web" }
+go-fish = { version = "0.2.0", path = "../go-fish" }
+go-fish-web = { version = "0.2.0", path = "../go-fish-web" }
 toml = "1.0.7"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

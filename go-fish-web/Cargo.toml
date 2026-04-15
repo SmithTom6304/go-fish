@@ -1,6 +1,6 @@
 [package]
 name = "go-fish-web"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 description = "Web protocol types for the go-fish game"
 license = "MIT"
@@ -8,6 +8,6 @@ repository = "https://github.com/SmithTom6304/go-fish"
 documentation = "https://docs.rs/go-fish-web"
 
 [dependencies]
-go-fish = { path = "../go-fish" }
+go-fish = { version = "0.2.0", path = "../go-fish" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
