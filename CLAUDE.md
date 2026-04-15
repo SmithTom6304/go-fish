@@ -45,7 +45,7 @@ go-fish-tui-client (client)  → depends on go-fish + go-fish-web
 
 ### go-fish (core engine)
 
-Pure game logic — no network dependencies. All code lives in `src/lib.rs`.
+Pure game logic — no network dependencies. Core game code lives in `src/lib.rs`; bot infrastructure in `src/bots.rs`.
 
 Key types:
 
@@ -77,6 +77,8 @@ Dealing: 7 cards per player for 2–3 players, 5 cards otherwise. Initial books 
 
 `advance_player_turn()` and `handle_active_player_has_empty_hand()` are the most complex methods — they temporarily remove players from `self.players` and restore order via `reorder_players()`.
 
+**Bots** (`src/bots.rs`): `Bot` trait with `observe(BotObservation)` + `generate_hook(&[PlayerId]) -> Hook`. `SimpleBot` is the bundled implementation — a probability-table bot with configurable `memory_limit` (observations retained) and `error_margin` (Gaussian noise std-dev). See `go-fish/CLAUDE.md` for details.
+
 ### go-fish-web (protocol types)
 
 Pure type-definition crate. Single file `src/lib.rs`. No logic, no tests. All types derive `serde::Serialize` / `serde::Deserialize`; JSON is the wire format.
@@ -91,6 +93,8 @@ Pure type-definition crate. Single file `src/lib.rs`. No logic, no tests. All ty
 | `LeaveLobby` | Exit the current lobby |
 | `StartGame` | Lobby leader starts the game |
 | `Hook(ClientHookRequest)` | Execute a turn (`target_name` + `rank`) |
+| `AddBot { bot_type }` | Leader adds a bot slot to the lobby |
+| `RemoveBot` | Leader removes the last bot slot from the lobby |
 
 **`ServerMessage` variants** (server → client):
 
@@ -143,7 +147,17 @@ Configuration (TOML, defaults used if `--config` is omitted):
 address = "127.0.0.1:9001"   # SocketAddr to bind
 lobby_max_players = 4         # max players per lobby (auto-starts when full)
 max_client_connections = 10   # hard cap; excess clients receive a Close frame
+
+[bots]
+thinking_time_min_ms = 2000   # minimum simulated thinking delay per bot turn
+thinking_time_max_ms = 4500   # maximum simulated thinking delay per bot turn
+
+[bots.simple_bot]
+memory_limit = 3              # observations retained by SimpleBot (0 = memoryless)
+error_margin = 0.2            # Gaussian noise std-dev applied to probability table
 ```
+
+The lobby leader can add bots via `ClientMessage::AddBot { bot_type }` and remove them via `ClientMessage::RemoveBot`. Each bot runs as a `BotDriver` Tokio task that shares the same hook-processing path as human players.
 
 `build/config.toml` is the production default bundled into the Docker image (`0.0.0.0:80`). `RUST_LOG` controls log level; standard `OTEL_*` variables configure the OTLP exporter.
 
@@ -198,7 +212,7 @@ Widgets (all in `ui.rs::widgets`, implement `Widget`, render to `Buffer`):
 
 ## Testing
 
-- **go-fish**: `rstest` with `#[values(...)]` for parameterized unit tests in `src/game_tests.rs`; proptest integration tests in `tests/complete_games.rs` (up to 10,000 random turns for 2–6 players).
+- **go-fish**: `rstest` with `#[values(...)]` for parameterized unit tests in `src/game_tests.rs`; proptest integration tests in `tests/complete_games.rs` (up to 10,000 random turns for 2–6 players). `src/bots.rs` has unit tests for `SimpleBot` memory management, probability table inference, and `generate_hook` correctness.
 - **go-fish-game-server**: 9+ `tokio::test` unit tests and 4 proptest suites in `connection.rs`; 18+ unit tests and 5 proptest suites in `lobby.rs`. In-memory WebSocket streams (no real TCP). Property tests run 20 iterations.
 - **go-fish-tui-client**: proptest round-trip tests for `ClientMessage` / `ServerMessage` in `network.rs`; proptest state-transition tests in `state_tests.rs`; widget unit tests and a `render_game` no-panic proptest in `ui.rs`.
 

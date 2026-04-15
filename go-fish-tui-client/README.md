@@ -44,7 +44,9 @@ Opens a dev server at `http://localhost:8080`. WebSocket traffic to `/ws` is pro
 | Pre-lobby | `c` | Create a new lobby |
 | Pre-lobby | `j` | Join an existing lobby (prompts for ID) |
 | Pre-lobby | `q` | Quit |
-| Lobby | `s` | Start game (leader only, requires ≥ 2 players) |
+| Lobby | `s` | Start game (leader only, requires ≥ 2 participants) |
+| Lobby | `a` | Add a bot slot (leader only) |
+| Lobby | `d` | Remove the last bot slot (leader only) |
 | Lobby | `q` | Leave lobby |
 | Game (your turn) | `h` | Start a hook (select target + rank) |
 | Game — selecting target | `j` / `↓` | Move cursor down |

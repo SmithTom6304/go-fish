@@ -72,6 +72,38 @@ Returns the player whose turn it is, or `None` if the game is finished.
 
 Returns winners and losers by completed-book count once `game.is_finished` is `true`.
 
+## Bots
+
+The `go_fish::bots` module provides a `Bot` trait and a bundled `SimpleBot` implementation for driving automated players.
+
+### `Bot` trait
+
+```rust
+pub trait Bot: Send {
+    fn observe(&mut self, observation: BotObservation);
+    fn generate_hook(&mut self, valid_targets: &[PlayerId]) -> Hook;
+}
+```
+
+After each turn the host calls `observe` with a `BotObservation` (own hand, opponent hand sizes, completed books, deck size, last hook outcome), then calls `generate_hook` when it's the bot's turn.
+
+### `SimpleBot`
+
+A probability-table bot. Construct with:
+
+```rust
+use go_fish::bots::SimpleBot;
+
+let bot = SimpleBot::new(
+    my_player_id,
+    /* memory_limit */ 5,    // observations to retain (0 = memoryless)
+    /* error_margin */ 0.15, // Gaussian noise std-dev (0.0 = deterministic)
+    /* seed        */ 42,
+);
+```
+
+It builds a `(opponent, rank) → probability` table from retained observations, updates it using inference rules (Catch / GoFish outcomes), adds configurable noise, then picks the highest-scoring `(target, rank)` pair from the bot's current hand.
+
 ## Testing
 
 ```bash

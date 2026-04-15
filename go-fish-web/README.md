@@ -16,14 +16,16 @@ This crate defines `ClientMessage` and `ServerMessage` plus all supporting types
 | `LeaveLobby` | — | Exit the current lobby |
 | `StartGame` | — | Lobby leader starts the game |
 | `Hook(ClientHookRequest)` | `{ target_name, rank }` | Execute a turn: ask `target_name` for all cards of `rank` |
+| `AddBot { bot_type }` | `BotType` | Leader adds a bot slot (currently only `SimpleBot`) |
+| `RemoveBot` | — | Leader removes the last bot slot |
 
 ### `ServerMessage` (server → client)
 
 | Variant | Payload | Purpose |
 |---------|---------|---------|
 | `PlayerIdentity(String)` | assigned name | Response to `Identity` |
-| `LobbyJoined { lobby_id, leader, players, max_players }` | — | Lobby entry confirmed |
-| `LobbyUpdated { leader, players }` | — | Broadcast when lobby roster changes |
+| `LobbyJoined { lobby_id, leader, players, max_players }` | `players: Vec<LobbyPlayer>` | Lobby entry confirmed |
+| `LobbyUpdated { leader, players }` | `players: Vec<LobbyPlayer>` | Broadcast when lobby roster changes |
 | `LobbyLeft(LobbyLeftReason)` | — | Lobby exit confirmed |
 | `GameStarted` | — | Broadcast when the game begins |
 | `GameSnapshot(GameSnapshot)` | full state | Sent to all players after each turn |
@@ -34,6 +36,16 @@ This crate defines `ClientMessage` and `ServerMessage` plus all supporting types
 
 ### Supporting types
 
+**`BotType`** — identifies which bot implementation to add to a lobby. Currently the only variant is `SimpleBot`.
+
+**`LobbyPlayer`** — a slot in the lobby player list, used in `LobbyJoined` and `LobbyUpdated`:
+```rust
+pub enum LobbyPlayer {
+    Human { name: String },
+    Bot { name: String, bot_type: BotType },
+}
+```
+
 **`GameSnapshot`** — the primary message during play, sent after every turn:
 ```rust
 pub struct GameSnapshot {
@@ -41,6 +53,7 @@ pub struct GameSnapshot {
     pub opponents: Vec<OpponentState>,            // opponents' visible state
     pub active_player: String,                    // whose turn it is
     pub last_hook_outcome: Option<HookOutcome>,   // result of the last turn
+    pub deck_size: usize,                         // cards remaining in the draw pile
 }
 ```
 
@@ -48,8 +61,8 @@ pub struct GameSnapshot {
 ```rust
 pub struct OpponentState {
     pub name: String,
-    pub card_count: usize,             // hand size (individual cards hidden)
-    pub completed_book_count: usize,
+    pub card_count: usize,                   // hand size (individual cards hidden)
+    pub completed_books: Vec<CompleteBook>,
 }
 ```
 

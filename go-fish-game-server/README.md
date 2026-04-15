@@ -6,6 +6,7 @@ Async WebSocket game server for the Go Fish card game, built with Tokio and toki
 
 - WebSocket-based JSON protocol (shared with `go-fish-web`)
 - Lobby system: create, join, and start games; auto-starts when a lobby is full
+- Bot players: lobby leader can add/remove bots before starting; bots use `go_fish::bots::SimpleBot`
 - Supports up to N players per lobby (configurable)
 - Ping/pong keepalive with automatic disconnect of unresponsive clients
 - OpenTelemetry tracing and logging via OTLP (HTTP)
@@ -32,6 +33,18 @@ max_client_connections = 10   # hard cap on concurrent connections
 ```
 
 All fields are optional; the values above are the defaults.
+
+Bot behaviour can also be tuned:
+
+```toml
+[bots]
+thinking_time_min_ms = 2000   # minimum simulated thinking delay per bot turn
+thinking_time_max_ms = 4500   # maximum simulated thinking delay per bot turn
+
+[bots.simple_bot]
+memory_limit = 3              # observations retained (0 = memoryless / random)
+error_margin = 0.2            # probability noise std-dev (0.0 = deterministic)
+```
 
 **Environment variables**
 
@@ -60,7 +73,9 @@ All messages are JSON-encoded WebSocket text frames. Types are defined in the `g
 | `"Identity"` | After connecting | Request a player identity (name) |
 | `"CreateLobby"` | After identity | Create a new lobby and become its leader |
 | `{"JoinLobby": "<id>"}` | After identity | Join an existing lobby by ID |
-| `"StartGame"` | In lobby, leader only | Start the game (requires ≥ 2 players) |
+| `"StartGame"` | In lobby, leader only | Start the game (requires ≥ 2 participants) |
+| `{"AddBot": {"bot_type": "SimpleBot"}}` | In lobby, leader only | Add a bot slot |
+| `"RemoveBot"` | In lobby, leader only | Remove the last bot slot |
 | `{"Hook": {"target": "<name>", "rank": "<rank>"}}` | In game, your turn | Ask a player for cards of a given rank |
 | `"LeaveLobby"` | In lobby or game | Leave the current lobby |
 

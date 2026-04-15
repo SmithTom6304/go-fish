@@ -15,11 +15,10 @@ cargo test --package go-fish complete_games         # integration tests only
 
 ## Module overview
 
-The entire library lives in a single file plus two test files:
-
 | File | Purpose |
 |------|---------|
 | `src/lib.rs` | All public types, trait implementations, and game logic |
+| `src/bots.rs` | `Bot` trait, `BotObservation`, `OpponentView`, and `SimpleBot` implementation |
 | `src/game_tests.rs` | Unit tests for `Deck`, `Hand`, and `Game` (included via `mod game_tests`) |
 | `tests/complete_games.rs` | Integration tests: runs full games with a random AI for 2–6 players |
 | `tests/drivers/mod.rs` | Random AI driver used by integration tests |
@@ -69,8 +68,37 @@ let result: Option<GameResult>  = game.get_game_result(); // Some only when is_f
 
 `Game::new()` deals 7 cards per player for 2–3 players, 5 cards otherwise. Initial books are completed before play begins.
 
+## Bots
+
+`src/bots.rs` defines the bot interface and the bundled `SimpleBot` implementation.
+
+### `Bot` trait
+
+```rust
+pub trait Bot: Send {
+    fn observe(&mut self, observation: BotObservation);
+    fn generate_hook(&mut self, valid_targets: &[PlayerId]) -> Hook;
+}
+```
+
+`BotObservation` is the partial-information view a bot receives after every turn: own hand + completed books, opponent hand sizes + completed books, deck size, active player, and the last hook outcome. `OpponentView` carries per-opponent data.
+
+### `SimpleBot`
+
+A probability-table bot with two tunable parameters:
+
+| Parameter | Type | Effect |
+|-----------|------|--------|
+| `memory_limit` | `u8` | Number of past observations retained. `0` = memoryless; picks a random valid move. |
+| `error_margin` | `f32` | Std-dev of Gaussian noise added to each probability entry. `0.0` = deterministic best move. |
+
+Algorithm: build a `(opponent, rank) → probability` table from retained observations using baseline proportional priors, then update with inference rules (Catch: target loses, fisher gains; GoFish: fisher holds, target lacks). Add `N(0, error_margin)` noise, clamp to `[0, 1]`, then pick the highest-scoring `(target, rank)` pair where the rank is in the bot's current hand.
+
+`SimpleBot::new(my_id, memory_limit, error_margin, seed)` — seeded with `SmallRng` for deterministic replay.
+
 ## Testing
 
 - `rstest` with `#[values(...)]` for parameterized unit tests.
 - `tests/complete_games.rs` runs up to 10,000 random turns for each of 2–6 player counts and asserts the game finishes.
+- `src/bots.rs` has unit tests for `observe` memory management, probability table updates, and `generate_hook` correctness.
 - When adding new logic to `take_turn` or `advance_player_turn`, add a unit test in `src/game_tests.rs` covering the new edge case.

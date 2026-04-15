@@ -70,11 +70,29 @@ Key invariants:
 address = "127.0.0.1:9001"   # SocketAddr to bind
 lobby_max_players = 4         # max players per lobby (auto-starts when full)
 max_client_connections = 10   # hard cap; excess clients receive a Close frame
+
+[bots]
+thinking_time_min_ms = 2000   # minimum simulated thinking delay per bot turn
+thinking_time_max_ms = 4500   # maximum simulated thinking delay per bot turn
+
+[bots.simple_bot]
+memory_limit  = 3             # observations retained by SimpleBot (0 = memoryless)
+error_margin  = 0.2           # Gaussian noise std-dev applied to probability table
 ```
 
 `build/config.toml` is the production default bundled into the Docker image (`0.0.0.0:80`).
 
 Environment variable `RUST_LOG` controls log level (default: `info`). Standard `OTEL_*` variables configure the OTLP exporter endpoint.
+
+## Bots
+
+The lobby leader can add or remove bot players before starting a game via `ClientMessage::AddBot { bot_type }` and `ClientMessage::RemoveBot`. The server assigns each bot a random fish-themed name with a type suffix (e.g. `"Salmon [SimpleBot]"`).
+
+`BotType` is defined in `go-fish-web`. Currently only `BotType::SimpleBot` is supported.
+
+When `StartGame` fires, each pending `BotSlot` is converted to a `BotDriver` Tokio task. The driver calls `Bot::observe` after every `GameSnapshot` broadcast, then—when it is the bot's turn—waits a random delay in `[thinking_time_min_ms, thinking_time_max_ms]` and injects a `LobbyEvent::Hook` back into the lobby channel. This means bots share the same hook-processing path as human players.
+
+`BotDriver` holds a `Box<dyn Bot>`, a `PlayerId`, the game's `LobbyEvent` sender, and the shared `GameSession` snapshot (protected by `Arc<Mutex>`).
 
 ## Keepalive
 

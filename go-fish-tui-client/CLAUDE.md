@@ -44,6 +44,7 @@ Connecting ──(PlayerIdentity)──▶ PreLobby ──(LobbyJoined)──▶
 
 All transitions live in `state.rs::apply_network_event` (and its private helpers). Key points:
 
+- `LobbyState.players` is `Vec<LobbyPlayer>` — each entry is either `Human { name }` or `Bot { name, bot_type }`. `LobbyUpdated` replaces the list wholesale; the UI renders bot names with their type in brackets.
 - `GameSnapshot` is the primary message during play; it updates hand, opponent state, active player, and hook outcome.
 - `GameResult` is stored in `GameState` but does **not** auto-navigate; the player must press Enter/Space.
 - Connection errors from `Game` navigate back to `PreLobby` (player name is preserved).
@@ -51,7 +52,15 @@ All transitions live in `state.rs::apply_network_event` (and its private helpers
 
 ## Input handling
 
-`handle_key` in `input.rs` is the only place keyboard logic lives, shared between native and WASM. The `GameInputState` sub-machine inside `Screen::Game`:
+`handle_key` in `input.rs` is the only place keyboard logic lives, shared between native and WASM.
+
+**Lobby screen** (leader-only actions):
+- `a` — sends `AddBot { bot_type: SimpleBot }`
+- `d` — sends `RemoveBot`
+- `s` — sends `StartGame` (requires ≥ 2 participants)
+- `q` — sends `LeaveLobby`
+
+**Game screen** `GameInputState` sub-machine:
 
 ```
 Idle ──[h]──▶ SelectingTarget ──[enter]──▶ SelectingRank ──[enter]──▶ sends Hook, back to Idle
@@ -74,8 +83,8 @@ The game screen builds one `PlayerStripWidget` row per player. The local player 
 
 ## Testing
 
-- **`state_tests.rs`** — proptest-based tests for `apply_network_event`. Covers all `Screen::Game` message handlers (Properties 11–19), verifying state transitions and that game-only messages are discarded outside the Game screen.
-- **`network.rs` tests** — proptest round-trip tests for `ClientMessage` and `ServerMessage` JSON serialisation, plus a check that invalid frames are discarded without panicking.
+- **`state_tests.rs`** — proptest-based tests for `apply_network_event`. Covers all `Screen::Game` message handlers (Properties 11–19), verifying state transitions and that game-only messages are discarded outside the Game screen. Includes a `lobby_player_strategy` that generates both `Human` and `Bot` variants.
+- **`network.rs` tests** — proptest round-trip tests for `ClientMessage` and `ServerMessage` JSON serialisation, plus a check that invalid frames are discarded without panicking. Includes strategies for `BotType`, `LobbyPlayer`, `AddBot`, and `RemoveBot`.
 - **`ui.rs` render tests** — unit tests for individual widgets (`CardWidget`, `TurnIndicatorWidget`, `IncompleteBookWidget`), and a proptest that `render_game` never panics across arbitrary `GameState` values.
 
 When adding new state transitions, add a corresponding property test in `state_tests.rs`. When adding new widgets, add unit tests in `ui.rs::widgets::tests`.
