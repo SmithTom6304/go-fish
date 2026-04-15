@@ -2,7 +2,15 @@
 name = "go-fish-tui-client"
 version = "0.2.0"
 edition = "2021"
+rust-version = "1.85.0"
 resolver = "3"
+description = "A terminal (and WASM) client for the Go Fish card game, built with ratatui."
+readme = "README.md"
+license = "MIT"
+repository = "https://github.com/SmithTom6304/go-fish"
+documentation = "https://docs.rs/go-fish-tui-client"
+keywords = ["game", "cards", "go-fish", "tui", "ratatui"]
+categories = ["games", "command-line-interface"]
 
 [dependencies]
 go-fish = { version = "0.2.0", path = "../go-fish" }

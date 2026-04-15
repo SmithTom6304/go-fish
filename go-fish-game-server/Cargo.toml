@@ -2,10 +2,14 @@
 name = "go-fish-game-server"
 version = "0.2.0"
 edition = "2024"
-description = "Game server that manages a go-fish game"
+rust-version = "1.85.0"
+description = "A WebSocket game server for the Go Fish card game, supporting human players and bots."
+readme = "README.md"
 license = "MIT"
 repository = "https://github.com/SmithTom6304/go-fish"
 documentation = "https://docs.rs/go-fish-game-server"
+keywords = ["game", "cards", "go-fish", "server", "websocket"]
+categories = ["games", "network-programming"]
 
 [dependencies]
 anyhow = "1.0.102"
