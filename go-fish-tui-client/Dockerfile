@@ -11,19 +11,18 @@ RUN curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/ca
 # Install trunk; it will download the correct wasm-bindgen-cli version automatically.
 RUN cargo binstall trunk
 
-ENV CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS='--cfg getrandom_backend="wasm_js"'
-
 WORKDIR /app
 
 # Copy workspace manifests and all crates needed for the WASM build
 COPY Cargo.toml Cargo.lock ./
 COPY go-fish ./go-fish
 COPY go-fish-web ./go-fish-web
+COPY go-fish-game-server ./go-fish-game-server
 COPY go-fish-tui-client ./go-fish-tui-client
 
 # --- Build ---
 WORKDIR /app/go-fish-tui-client
-RUN trunk build --release --locked
+RUN CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS='--cfg getrandom_backend="wasm_js"' trunk build --release --locked
 # TRUNK_TOOLS_WASM_BINDGEN="0.2.114"
 
 # --- Runtime ---
