@@ -1,5 +1,5 @@
-# Build from the go-fish-tui-client directory:
-#   docker build -f go-fish-tui-client/Dockerfile go-fish-tui-client
+# Build from the workspace root:
+#   docker build -f go-fish-tui-client/Dockerfile .
 FROM rust:1.94.1-bookworm AS builder
 
 # Install the wasm32 target
@@ -11,26 +11,21 @@ RUN curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/ca
 # Install trunk; it will download the correct wasm-bindgen-cli version automatically.
 RUN cargo binstall trunk
 
-# The getrandom wasm_js rustflag from the workspace .cargo/config.toml is not
-# in scope when building from this crate's directory, so mirror it here.
 ENV CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS='--cfg getrandom_backend="wasm_js"'
 
 WORKDIR /app
 
-# --- Dependency caching layer ---
-# COPY Cargo.toml ./
-# RUN mkdir src && echo "fn main() {}" > src/main.rs
-# RUN cargo build --target wasm32-unknown-unknown --release
-# RUN rm -rf src
+# Copy workspace manifests and all crates needed for the WASM build
+COPY Cargo.toml Cargo.lock ./
+COPY go-fish ./go-fish
+COPY go-fish-web ./go-fish-web
+COPY go-fish-tui-client ./go-fish-tui-client
 
 # --- Build ---
-COPY Trunk.toml index.html ./
-COPY Cargo.toml ./
-COPY src ./src
-
+WORKDIR /app/go-fish-tui-client
 RUN trunk build --release --locked
 # TRUNK_TOOLS_WASM_BINDGEN="0.2.114"
 
 # --- Runtime ---
 FROM nginx:alpine AS runtime
-COPY --from=builder /app/dist /usr/share/nginx/html
+COPY --from=builder /app/go-fish-tui-client/dist /usr/share/nginx/html
