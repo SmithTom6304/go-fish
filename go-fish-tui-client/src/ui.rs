@@ -6,7 +6,7 @@ pub use render::render;
 mod render {
     use crate::state::PreLobbyInputState;
     use crate::state::{AppState, ConnectingState, LobbyState, PreLobbyState, Screen};
-    use crate::state::{GameInputState, GameState};
+    use crate::state::{GameInputState, GameState, MAX_BOOK_NOTIFICATIONS};
     use go_fish::HookResult;
     use go_fish_web::HookError;
     use go_fish_web::HookOutcome;
@@ -216,7 +216,7 @@ mod render {
         }
 
         let mut constraints = state.players.iter().map(|_| Constraint::Length(super::CARD_HEIGHT + 2)).collect::<Vec<_>>();
-        constraints.push(Constraint::Length(2)); // status bar
+        constraints.push(Constraint::Length(2 + MAX_BOOK_NOTIFICATIONS as u16)); // status bar + notifications
         let constraint_count = constraints.len();
         let bg_chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -265,7 +265,14 @@ mod render {
     }
 
     fn render_status_bar(f: &mut Frame, state: &GameState, area: Rect) {
-        let status = Paragraph::new(status_message(state));
+        let mut lines = vec![status_message(state)];
+        if let Some(ref msg) = state.deck_draw_notification {
+            lines.push(Line::from(msg.clone()));
+        }
+        for msg in &state.book_completion_notifications {
+            lines.push(Line::from(msg.clone()));
+        }
+        let status = Paragraph::new(lines);
         f.render_widget(status, area);
     }
 
@@ -442,7 +449,9 @@ mod render {
                     opponent_card_counts: opponents.clone(),
                     opponent_book_counts: opponents.keys().map(|k| (k.clone(), 0)).collect(),
                     hook_error: None,
-                    card_pickup_notification: None,
+                    deck_draw_notification: None,
+                    book_completion_notifications: std::collections::VecDeque::new(),
+                    has_received_snapshot: true,
                     player_name,
                     players,
                     hand,
