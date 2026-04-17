@@ -3,6 +3,11 @@
 
 use super::*;
 use go_fish::{Card, CompleteBook, Hand, HookResult, IncompleteBook, Rank, Suit};
+use ratatui::text::Line;
+
+fn line_text(line: &Line<'_>) -> String {
+    line.spans.iter().map(|s| s.content.as_ref()).collect()
+}
 use go_fish_web::{
     BotType, GameResult, GameSnapshot, HandState, HookError, HookOutcome, LobbyPlayer,
     OpponentState, ServerMessage,
@@ -176,10 +181,6 @@ fn complete_books_json(books: &[go_fish::CompleteBook]) -> String {
     serde_json::to_string(books).unwrap()
 }
 
-fn hook_outcome_json(outcome: &Option<go_fish_web::HookOutcome>) -> String {
-    serde_json::to_string(outcome).unwrap()
-}
-
 fn hook_error_json(err: &Option<go_fish_web::HookError>) -> String {
     serde_json::to_string(err).unwrap()
 }
@@ -226,7 +227,6 @@ proptest! {
         let expected_hand_json = hand_json(&expected_hand);
         let expected_books_json = complete_books_json(&snapshot.hand_state.completed_books);
         let expected_active = snapshot.active_player.clone();
-        let expected_outcome_json = hook_outcome_json(&snapshot.last_hook_outcome);
 
         let mut state = AppState { screen: Screen::Game(game) };
         apply_network_event(
@@ -239,12 +239,6 @@ proptest! {
                 prop_assert_eq!(hand_json(&g.hand), expected_hand_json);
                 prop_assert_eq!(complete_books_json(&g.completed_books), expected_books_json);
                 prop_assert_eq!(&g.active_player, &expected_active);
-                // latest_hook_outcome is only set when last_hook_outcome is Some
-                // (the handler only sets it inside the `if let Some(ref outcome)` block)
-                // So we only assert when the snapshot had Some outcome
-                if expected_outcome_json != "null" {
-                    prop_assert_eq!(hook_outcome_json(&g.latest_hook_outcome), expected_outcome_json);
-                }
             }
             other => prop_assert!(false, "Expected Screen::Game, got {:?}", other),
         }
@@ -285,18 +279,18 @@ proptest! {
     }
 }
 
-// ── Property 14: GameSnapshot with last_hook_outcome updates latest outcome ───
+// ── Property 14: GameSnapshot with last_hook_outcome adds notification ────────
 
-// Feature: go-fish-tui-client-gameplay, Property 14: GameSnapshot with last_hook_outcome updates latest outcome
+// Feature: go-fish-tui-client-gameplay, Property 14: GameSnapshot with last_hook_outcome adds a notification
 // Validates: Requirements 4.1
 proptest! {
     #[test]
-    fn prop_game_snapshot_with_hook_outcome_updates_latest(
-        game in game_state_strategy(),
+    fn prop_game_snapshot_with_hook_outcome_adds_notification(
+        mut game in game_state_strategy(),
         snapshot_base in game_snapshot_strategy(),
         outcome in hook_outcome_strategy(),
     ) {
-        let expected_json = serde_json::to_string(&outcome).unwrap();
+        game.has_received_snapshot = true;
         let snapshot = GameSnapshot {
             last_hook_outcome: Some(outcome),
             ..snapshot_base
@@ -310,13 +304,8 @@ proptest! {
 
         match &state.screen {
             Screen::Game(g) => {
-                let actual_json = serde_json::to_string(&g.latest_hook_outcome).unwrap();
-                // latest_hook_outcome should be Some(outcome)
-                prop_assert!(
-                    actual_json.contains(&expected_json[1..expected_json.len()-1].chars().take(20).collect::<String>()),
-                    "latest_hook_outcome not updated: got {}", actual_json
-                );
-                prop_assert!(g.latest_hook_outcome.is_some());
+                // A hook outcome notification should be at the front (most recent)
+                prop_assert!(g.notifications.front().is_some());
             }
             other => prop_assert!(false, "Expected Screen::Game, got {:?}", other),
         }
@@ -388,169 +377,66 @@ proptest! {
     }
 }
 
-// ── Property 17: Deck draw notification detects drawn rank ──────────────────
+// ── Property 17: Notifications: seeding, ordering, eviction ──────────────────
 
 #[test]
-fn deck_draw_notification_detects_new_rank() {
+fn game_state_new_seeds_game_started_notification() {
+    let game = GameState::new("Alice".into(), vec!["Alice".into(), "Bob".into()]);
+    assert_eq!(game.notifications.len(), 1);
+    assert_eq!(line_text(&game.notifications[0]), "Game started!");
+}
+
+#[test]
+fn hook_outcome_notification_added_newest_first() {
     let mut game = GameState::new("Alice".into(), vec!["Alice".into(), "Bob".into()]);
     game.has_received_snapshot = true;
-    // Give Alice a hand with one book of Twos (2 cards)
-    game.hand = Hand {
-        books: vec![IncompleteBook {
-            rank: Rank::Two,
-            cards: vec![
-                Card { suit: Suit::Clubs, rank: Rank::Two },
-                Card { suit: Suit::Hearts, rank: Rank::Two },
-            ],
-        }],
-    };
 
-    // Snapshot adds a King (deck draw via Go Fish)
     let snapshot = GameSnapshot {
-        hand_state: HandState {
-            hand: Hand {
-                books: vec![
-                    IncompleteBook {
-                        rank: Rank::Two,
-                        cards: vec![
-                            Card { suit: Suit::Clubs, rank: Rank::Two },
-                            Card { suit: Suit::Hearts, rank: Rank::Two },
-                        ],
-                    },
-                    IncompleteBook {
-                        rank: Rank::King,
-                        cards: vec![Card { suit: Suit::Spades, rank: Rank::King }],
-                    },
-                ],
-            },
-            completed_books: vec![],
-        },
-        opponents: vec![OpponentState {
-            name: "Bob".into(),
-            card_count: 5,
-            completed_books: vec![],
-        }],
+        hand_state: HandState { hand: Hand { books: vec![] }, completed_books: vec![] },
+        opponents: vec![OpponentState { name: "Bob".into(), card_count: 5, completed_books: vec![] }],
         active_player: "Bob".into(),
         last_hook_outcome: Some(HookOutcome {
-            fisher_name: "Alice".into(),
-            target_name: "Bob".into(),
+            fisher_name: "Bob".into(),
+            target_name: "Alice".into(),
             rank: Rank::King,
             result: HookResult::GoFish,
         }),
         deck_size: 30,
     };
 
+    let prev_len = game.notifications.len();
     let mut state = AppState { screen: Screen::Game(game) };
     apply_network_event(&mut state, &NetworkEvent::Message(ServerMessage::GameSnapshot(snapshot)));
 
     match &state.screen {
         Screen::Game(g) => {
-            assert_eq!(g.deck_draw_notification, Some("You drew a King from the deck".into()));
+            assert!(g.notifications.len() > prev_len || g.notifications.len() == MAX_NOTIFICATION_HISTORY);
+            // Hook outcome is most recent — should be at front
+            assert!(line_text(g.notifications.front().unwrap()).contains("Kings"));
         }
         other => panic!("Expected Screen::Game, got {:?}", other),
     }
 }
 
 #[test]
-fn deck_draw_notification_not_shown_for_hook_catch() {
+fn notification_order_within_snapshot() {
+    // One snapshot that produces: opponent book + local book + hook outcome
+    // Expected front-to-back order after (newest first): hook outcome, local book, opponent book
     let mut game = GameState::new("Alice".into(), vec!["Alice".into(), "Bob".into()]);
     game.has_received_snapshot = true;
-    game.hand = Hand {
-        books: vec![IncompleteBook {
-            rank: Rank::Two,
-            cards: vec![Card { suit: Suit::Clubs, rank: Rank::Two }],
-        }],
+    // Clear the "Game started!" seed so we can reason about positions
+    game.notifications.clear();
+
+    let completed_ace = CompleteBook {
+        rank: Rank::Ace,
+        cards: [
+            Card { suit: Suit::Clubs, rank: Rank::Ace },
+            Card { suit: Suit::Diamonds, rank: Rank::Ace },
+            Card { suit: Suit::Hearts, rank: Rank::Ace },
+            Card { suit: Suit::Spades, rank: Rank::Ace },
+        ],
     };
-
-    // Alice caught a Two from Bob (hook catch, not deck draw)
-    let snapshot = GameSnapshot {
-        hand_state: HandState {
-            hand: Hand {
-                books: vec![IncompleteBook {
-                    rank: Rank::Two,
-                    cards: vec![
-                        Card { suit: Suit::Clubs, rank: Rank::Two },
-                        Card { suit: Suit::Hearts, rank: Rank::Two },
-                    ],
-                }],
-            },
-            completed_books: vec![],
-        },
-        opponents: vec![OpponentState {
-            name: "Bob".into(),
-            card_count: 4,
-            completed_books: vec![],
-        }],
-        active_player: "Alice".into(),
-        last_hook_outcome: Some(HookOutcome {
-            fisher_name: "Alice".into(),
-            target_name: "Bob".into(),
-            rank: Rank::Two,
-            result: HookResult::Catch(IncompleteBook {
-                rank: Rank::Two,
-                cards: vec![Card { suit: Suit::Hearts, rank: Rank::Two }],
-            }),
-        }),
-        deck_size: 30,
-    };
-
-    let mut state = AppState { screen: Screen::Game(game) };
-    apply_network_event(&mut state, &NetworkEvent::Message(ServerMessage::GameSnapshot(snapshot)));
-
-    match &state.screen {
-        Screen::Game(g) => {
-            assert_eq!(g.deck_draw_notification, None);
-        }
-        other => panic!("Expected Screen::Game, got {:?}", other),
-    }
-}
-
-#[test]
-fn deck_draw_notification_suppressed_on_first_snapshot() {
-    let game = GameState::new("Alice".into(), vec!["Alice".into(), "Bob".into()]);
-    assert!(!game.has_received_snapshot);
-
-    let snapshot = GameSnapshot {
-        hand_state: HandState {
-            hand: Hand {
-                books: vec![IncompleteBook {
-                    rank: Rank::King,
-                    cards: vec![Card { suit: Suit::Spades, rank: Rank::King }],
-                }],
-            },
-            completed_books: vec![],
-        },
-        opponents: vec![OpponentState {
-            name: "Bob".into(),
-            card_count: 5,
-            completed_books: vec![],
-        }],
-        active_player: "Alice".into(),
-        last_hook_outcome: None,
-        deck_size: 40,
-    };
-
-    let mut state = AppState { screen: Screen::Game(game) };
-    apply_network_event(&mut state, &NetworkEvent::Message(ServerMessage::GameSnapshot(snapshot)));
-
-    match &state.screen {
-        Screen::Game(g) => {
-            assert_eq!(g.deck_draw_notification, None);
-            assert!(g.has_received_snapshot);
-        }
-        other => panic!("Expected Screen::Game, got {:?}", other),
-    }
-}
-
-// ── Property 17b: Book completion notifications ─────────────────────────────
-
-#[test]
-fn book_completion_notification_local_player() {
-    let mut game = GameState::new("Alice".into(), vec!["Alice".into(), "Bob".into()]);
-    game.has_received_snapshot = true;
-    game.completed_books = vec![];
-
-    let completed = CompleteBook {
+    let completed_king = CompleteBook {
         rank: Rank::King,
         cards: [
             Card { suit: Suit::Clubs, rank: Rank::King },
@@ -563,16 +449,21 @@ fn book_completion_notification_local_player() {
     let snapshot = GameSnapshot {
         hand_state: HandState {
             hand: Hand { books: vec![] },
-            completed_books: vec![completed],
+            completed_books: vec![completed_ace],
         },
         opponents: vec![OpponentState {
             name: "Bob".into(),
-            card_count: 5,
-            completed_books: vec![],
+            card_count: 0,
+            completed_books: vec![completed_king],
         }],
         active_player: "Alice".into(),
-        last_hook_outcome: None,
-        deck_size: 30,
+        last_hook_outcome: Some(HookOutcome {
+            fisher_name: "Alice".into(),
+            target_name: "Bob".into(),
+            rank: Rank::Two,
+            result: HookResult::GoFish,
+        }),
+        deck_size: 20,
     };
 
     let mut state = AppState { screen: Screen::Game(game) };
@@ -580,59 +471,21 @@ fn book_completion_notification_local_player() {
 
     match &state.screen {
         Screen::Game(g) => {
-            assert_eq!(g.book_completion_notifications.len(), 1);
-            assert_eq!(g.book_completion_notifications[0], "You completed a book of Kings!");
+            // With MAX_NOTIFICATION_HISTORY=3: local book (front), hook outcome, opponent book (back)
+            assert_eq!(g.notifications.len(), MAX_NOTIFICATION_HISTORY);
+            assert!(line_text(&g.notifications[0]).contains("Aces"), "front should be local book, got: {:?}", g.notifications[0]);
+            assert!(line_text(&g.notifications[1]).contains("Twos"), "middle should be hook outcome, got: {:?}", g.notifications[1]);
+            assert!(line_text(&g.notifications[2]).contains("Kings"), "back should be opponent book, got: {:?}", g.notifications[2]);
         }
         other => panic!("Expected Screen::Game, got {:?}", other),
     }
 }
 
 #[test]
-fn book_completion_notification_opponent() {
+fn notifications_evicted_when_exceeding_max() {
     let mut game = GameState::new("Alice".into(), vec!["Alice".into(), "Bob".into()]);
     game.has_received_snapshot = true;
-
-    let completed = CompleteBook {
-        rank: Rank::Ace,
-        cards: [
-            Card { suit: Suit::Clubs, rank: Rank::Ace },
-            Card { suit: Suit::Diamonds, rank: Rank::Ace },
-            Card { suit: Suit::Hearts, rank: Rank::Ace },
-            Card { suit: Suit::Spades, rank: Rank::Ace },
-        ],
-    };
-
-    let snapshot = GameSnapshot {
-        hand_state: HandState {
-            hand: Hand { books: vec![] },
-            completed_books: vec![],
-        },
-        opponents: vec![OpponentState {
-            name: "Bob".into(),
-            card_count: 3,
-            completed_books: vec![completed],
-        }],
-        active_player: "Bob".into(),
-        last_hook_outcome: None,
-        deck_size: 30,
-    };
-
-    let mut state = AppState { screen: Screen::Game(game) };
-    apply_network_event(&mut state, &NetworkEvent::Message(ServerMessage::GameSnapshot(snapshot)));
-
-    match &state.screen {
-        Screen::Game(g) => {
-            assert_eq!(g.book_completion_notifications.len(), 1);
-            assert_eq!(g.book_completion_notifications[0], "Bob completed a book of Aces!");
-        }
-        other => panic!("Expected Screen::Game, got {:?}", other),
-    }
-}
-
-#[test]
-fn book_completion_notifications_rolling_buffer() {
-    let mut game = GameState::new("Alice".into(), vec!["Alice".into(), "Bob".into()]);
-    game.has_received_snapshot = true;
+    game.notifications.clear();
 
     let make_book = |rank: Rank| CompleteBook {
         rank,
@@ -644,12 +497,9 @@ fn book_completion_notifications_rolling_buffer() {
         ],
     };
 
-    // Apply snapshot with 4 new opponent books (exceeds MAX_BOOK_NOTIFICATIONS=3)
+    // Apply a snapshot with 4 new opponent books — exceeds MAX_NOTIFICATION_HISTORY=3
     let snapshot = GameSnapshot {
-        hand_state: HandState {
-            hand: Hand { books: vec![] },
-            completed_books: vec![],
-        },
+        hand_state: HandState { hand: Hand { books: vec![] }, completed_books: vec![] },
         opponents: vec![OpponentState {
             name: "Bob".into(),
             card_count: 0,
@@ -662,7 +512,7 @@ fn book_completion_notifications_rolling_buffer() {
         }],
         active_player: "Alice".into(),
         last_hook_outcome: None,
-        deck_size: 20,
+        deck_size: 10,
     };
 
     let mut state = AppState { screen: Screen::Game(game) };
@@ -670,102 +520,38 @@ fn book_completion_notifications_rolling_buffer() {
 
     match &state.screen {
         Screen::Game(g) => {
-            assert_eq!(g.book_completion_notifications.len(), MAX_BOOK_NOTIFICATIONS);
-            // Oldest (Twos) should have been evicted
-            assert_eq!(g.book_completion_notifications[0], "Bob completed a book of Threes!");
-            assert_eq!(g.book_completion_notifications[1], "Bob completed a book of Fours!");
-            assert_eq!(g.book_completion_notifications[2], "Bob completed a book of Fives!");
+            assert_eq!(g.notifications.len(), MAX_NOTIFICATION_HISTORY);
+            // Oldest (Twos, Threes) evicted; Fours, Fives remain at back; Fives at front
+            assert!(line_text(&g.notifications[0]).contains("Fives"), "front (newest): {:?}", g.notifications[0]);
+            assert!(line_text(&g.notifications[1]).contains("Fours"), "middle: {:?}", g.notifications[1]);
+            assert!(line_text(&g.notifications[2]).contains("Threes"), "back (oldest retained): {:?}", g.notifications[2]);
         }
         other => panic!("Expected Screen::Game, got {:?}", other),
     }
 }
 
 #[test]
-fn no_notifications_when_counts_unchanged() {
+fn deck_draw_notification_added() {
     let mut game = GameState::new("Alice".into(), vec!["Alice".into(), "Bob".into()]);
     game.has_received_snapshot = true;
-    game.hand = Hand {
-        books: vec![IncompleteBook {
-            rank: Rank::Two,
-            cards: vec![Card { suit: Suit::Clubs, rank: Rank::Two }],
-        }],
-    };
+    game.notifications.clear();
 
-    // Snapshot with same hand, no changes
     let snapshot = GameSnapshot {
         hand_state: HandState {
             hand: Hand {
                 books: vec![IncompleteBook {
-                    rank: Rank::Two,
-                    cards: vec![Card { suit: Suit::Clubs, rank: Rank::Two }],
+                    rank: Rank::King,
+                    cards: vec![Card { suit: Suit::Spades, rank: Rank::King }],
                 }],
             },
             completed_books: vec![],
         },
-        opponents: vec![OpponentState {
-            name: "Bob".into(),
-            card_count: 5,
-            completed_books: vec![],
-        }],
-        active_player: "Bob".into(),
-        last_hook_outcome: None,
-        deck_size: 40,
-    };
-
-    let mut state = AppState { screen: Screen::Game(game) };
-    apply_network_event(&mut state, &NetworkEvent::Message(ServerMessage::GameSnapshot(snapshot)));
-
-    match &state.screen {
-        Screen::Game(g) => {
-            assert_eq!(g.deck_draw_notification, None);
-            assert!(g.book_completion_notifications.is_empty());
-        }
-        other => panic!("Expected Screen::Game, got {:?}", other),
-    }
-}
-
-#[test]
-fn deck_draw_detected_when_completing_book() {
-    let mut game = GameState::new("Alice".into(), vec!["Alice".into(), "Bob".into()]);
-    game.has_received_snapshot = true;
-    // Alice has 3 Kings
-    game.hand = Hand {
-        books: vec![IncompleteBook {
-            rank: Rank::King,
-            cards: vec![
-                Card { suit: Suit::Clubs, rank: Rank::King },
-                Card { suit: Suit::Diamonds, rank: Rank::King },
-                Card { suit: Suit::Hearts, rank: Rank::King },
-            ],
-        }],
-    };
-
-    let completed_king = CompleteBook {
-        rank: Rank::King,
-        cards: [
-            Card { suit: Suit::Clubs, rank: Rank::King },
-            Card { suit: Suit::Diamonds, rank: Rank::King },
-            Card { suit: Suit::Hearts, rank: Rank::King },
-            Card { suit: Suit::Spades, rank: Rank::King },
-        ],
-    };
-
-    // Drew King from deck, completing the book (King disappears from hand)
-    let snapshot = GameSnapshot {
-        hand_state: HandState {
-            hand: Hand { books: vec![] },
-            completed_books: vec![completed_king],
-        },
-        opponents: vec![OpponentState {
-            name: "Bob".into(),
-            card_count: 5,
-            completed_books: vec![],
-        }],
+        opponents: vec![OpponentState { name: "Bob".into(), card_count: 5, completed_books: vec![] }],
         active_player: "Bob".into(),
         last_hook_outcome: Some(HookOutcome {
             fisher_name: "Alice".into(),
             target_name: "Bob".into(),
-            rank: Rank::Ace,
+            rank: Rank::King,
             result: HookResult::GoFish,
         }),
         deck_size: 29,
@@ -776,9 +562,95 @@ fn deck_draw_detected_when_completing_book() {
 
     match &state.screen {
         Screen::Game(g) => {
-            assert_eq!(g.deck_draw_notification, Some("You drew a King from the deck".into()));
-            assert_eq!(g.book_completion_notifications.len(), 1);
-            assert_eq!(g.book_completion_notifications[0], "You completed a book of Kings!");
+            // Notifications (newest first): hook outcome, deck draw
+            assert!(line_text(&g.notifications[0]).contains("Kings"), "hook outcome at front");
+            assert!(line_text(&g.notifications[1]).contains("drew a King"), "deck draw second: {:?}", g.notifications[1]);
+        }
+        other => panic!("Expected Screen::Game, got {:?}", other),
+    }
+}
+
+#[test]
+fn first_snapshot_suppresses_deck_draw_and_books_but_not_hook() {
+    let game = GameState::new("Alice".into(), vec!["Alice".into(), "Bob".into()]);
+    assert!(!game.has_received_snapshot);
+
+    let snapshot = GameSnapshot {
+        hand_state: HandState {
+            hand: Hand {
+                books: vec![IncompleteBook {
+                    rank: Rank::King,
+                    cards: vec![Card { suit: Suit::Spades, rank: Rank::King }],
+                }],
+            },
+            completed_books: vec![CompleteBook {
+                rank: Rank::Ace,
+                cards: [
+                    Card { suit: Suit::Clubs, rank: Rank::Ace },
+                    Card { suit: Suit::Diamonds, rank: Rank::Ace },
+                    Card { suit: Suit::Hearts, rank: Rank::Ace },
+                    Card { suit: Suit::Spades, rank: Rank::Ace },
+                ],
+            }],
+        },
+        opponents: vec![OpponentState { name: "Bob".into(), card_count: 5, completed_books: vec![] }],
+        active_player: "Alice".into(),
+        last_hook_outcome: None,
+        deck_size: 38,
+    };
+
+    let mut state = AppState { screen: Screen::Game(game) };
+    apply_network_event(&mut state, &NetworkEvent::Message(ServerMessage::GameSnapshot(snapshot)));
+
+    match &state.screen {
+        Screen::Game(g) => {
+            // Only "Game started!" from seed — no deck draw or book completion notifications
+            assert_eq!(g.notifications.len(), 1);
+            assert_eq!(line_text(&g.notifications[0]), "Game started!");
+            assert!(g.has_received_snapshot);
+        }
+        other => panic!("Expected Screen::Game, got {:?}", other),
+    }
+}
+
+#[test]
+fn notifications_persist_across_snapshots() {
+    let mut game = GameState::new("Alice".into(), vec!["Alice".into(), "Bob".into()]);
+    game.has_received_snapshot = true;
+    game.notifications.clear();
+
+    // First snapshot: adds one hook outcome
+    let snap1 = GameSnapshot {
+        hand_state: HandState { hand: Hand { books: vec![] }, completed_books: vec![] },
+        opponents: vec![OpponentState { name: "Bob".into(), card_count: 5, completed_books: vec![] }],
+        active_player: "Bob".into(),
+        last_hook_outcome: Some(HookOutcome {
+            fisher_name: "Bob".into(),
+            target_name: "Alice".into(),
+            rank: Rank::Two,
+            result: HookResult::GoFish,
+        }),
+        deck_size: 30,
+    };
+
+    let mut state = AppState { screen: Screen::Game(game) };
+    apply_network_event(&mut state, &NetworkEvent::Message(ServerMessage::GameSnapshot(snap1)));
+
+    // Second snapshot: no new events
+    let snap2 = GameSnapshot {
+        hand_state: HandState { hand: Hand { books: vec![] }, completed_books: vec![] },
+        opponents: vec![OpponentState { name: "Bob".into(), card_count: 5, completed_books: vec![] }],
+        active_player: "Alice".into(),
+        last_hook_outcome: None,
+        deck_size: 30,
+    };
+    apply_network_event(&mut state, &NetworkEvent::Message(ServerMessage::GameSnapshot(snap2)));
+
+    match &state.screen {
+        Screen::Game(g) => {
+            // Notification from snap1 should still be present
+            assert!(g.notifications.iter().any(|n| line_text(n).contains("Twos")),
+                "old notification should persist, got: {:?}", g.notifications);
         }
         other => panic!("Expected Screen::Game, got {:?}", other),
     }

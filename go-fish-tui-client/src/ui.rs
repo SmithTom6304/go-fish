@@ -6,19 +6,15 @@ pub use render::render;
 mod render {
     use crate::state::PreLobbyInputState;
     use crate::state::{AppState, ConnectingState, LobbyState, PreLobbyState, Screen};
-    use crate::state::{GameInputState, GameState, MAX_BOOK_NOTIFICATIONS};
-    use go_fish::HookResult;
-    use go_fish_web::HookError;
-    use go_fish_web::HookOutcome;
+    use crate::state::{GameInputState, GameState, MAX_NOTIFICATION_HISTORY};
     use ratatui::layout::{Flex, Rect};
     use ratatui::style::Modifier;
-    use ratatui::text::Line;
-    use ratatui::text::Span;
     use ratatui::widgets::Clear;
     use ratatui::widgets::Padding;
     use ratatui::{
         layout::{Alignment, Constraint, Direction, Layout},
         style::{Color, Style},
+        text::{Line, Span},
         widgets::{Block, Borders, Paragraph},
         Frame,
     };
@@ -216,7 +212,7 @@ mod render {
         }
 
         let mut constraints = state.players.iter().map(|_| Constraint::Length(super::CARD_HEIGHT + 2)).collect::<Vec<_>>();
-        constraints.push(Constraint::Length(2 + MAX_BOOK_NOTIFICATIONS as u16)); // status bar + notifications
+        constraints.push(Constraint::Length(MAX_NOTIFICATION_HISTORY as u16));
         let constraint_count = constraints.len();
         let bg_chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -265,56 +261,11 @@ mod render {
     }
 
     fn render_status_bar(f: &mut Frame, state: &GameState, area: Rect) {
-        let mut lines = vec![status_message(state)];
-        if let Some(ref msg) = state.deck_draw_notification {
-            lines.push(Line::from(msg.clone()));
-        }
-        for msg in &state.book_completion_notifications {
-            lines.push(Line::from(msg.clone()));
-        }
-        let status = Paragraph::new(lines);
-        f.render_widget(status, area);
-    }
-
-    fn status_message(game_state: &'_ GameState) -> Line<'_> {
-        if let Some(outcome) = &game_state.latest_hook_outcome {
-            return hook_outcome_message(outcome, &game_state.player_name);
-        }
-        Line::styled("Game started!".to_string(), Style::default())
-    }
-
-    fn hook_outcome_message<'a>(outcome: &HookOutcome, local_name: &str) -> Line<'a> {
-        let rank = super::widgets::rank_short(outcome.rank);
-        match &outcome.result {
-            HookResult::Catch(book) => Line::from(vec![
-                format_name(&outcome.fisher_name, local_name),
-                " asked ".into(),
-                format_name(&outcome.target_name, local_name),
-                " for ".into(),
-                rank.into(),
-                " — Caught ".into(),
-                book.cards.len().to_string().into(),
-                " cards!".into(),
-            ]),
-            HookResult::GoFish => Line::from(vec![
-                format_name(&outcome.fisher_name, local_name),
-                " asked ".into(),
-                format_name(&outcome.target_name, local_name),
-                " for ".into(),
-                rank.into(),
-                " — Go Fish!".into(),
-            ]),
-        }
-    }
-
-    #[allow(dead_code)]
-    fn hook_error_message(err: &HookError) -> String {
-        match err {
-            HookError::NotYourTurn => "Not your turn".to_string(),
-            HookError::UnknownPlayer(name) => format!("Unknown player: {}", name),
-            HookError::CannotTargetYourself => "Cannot target yourself".to_string(),
-            HookError::YouDoNotHaveRank(rank) => format!("You do not have rank: {}", rank),
-        }
+        use super::widgets::{NotificationOrder, NotificationWidget};
+        f.render_widget(
+            NotificationWidget::new(&state.notifications, NotificationOrder::NewestFirst),
+            area,
+        );
     }
 
     fn strip_order<'a>(players: &'a [String], local: &str) -> Vec<&'a String> {
@@ -325,14 +276,6 @@ mod render {
             .collect()
     }
 
-    fn format_name(name: &str, local_name: &str) -> Span<'static> {
-        if name == local_name {
-            Span::styled("you", Style::default().fg(Color::Green))
-        } else {
-            Span::styled(name.to_owned(), Style::default())
-        }
-    }
-
     fn opponents(game: &GameState) -> Vec<&String> {
         game.players.iter().filter(|p| p != &&game.player_name).collect()
     }
@@ -341,8 +284,8 @@ mod render {
     mod tests {
         use super::*;
         use crate::state::{AppState, Screen};
-        use go_fish::{Card, CompleteBook, Hand, HookResult, IncompleteBook, Rank, Suit};
-        use go_fish_web::{GameResult, HookOutcome};
+        use go_fish::{Card, CompleteBook, Hand, IncompleteBook, Rank, Suit};
+        use go_fish_web::GameResult;
         use proptest::prelude::*;
         use ratatui::{backend::TestBackend, Terminal};
 
@@ -387,20 +330,6 @@ mod render {
                 .prop_map(|books| Hand { books })
         }
 
-        fn hook_result_strategy() -> impl Strategy<Value = HookResult> {
-            prop_oneof![
-                incomplete_book_strategy().prop_map(HookResult::Catch),
-                Just(HookResult::GoFish),
-            ]
-        }
-
-        fn hook_outcome_strategy() -> impl Strategy<Value = HookOutcome> {
-            ("[a-zA-Z0-9]{1,16}", "[a-zA-Z0-9]{1,16}", rank_strategy(), hook_result_strategy())
-                .prop_map(|(fisher_name, target_name, rank, result)| HookOutcome {
-                    fisher_name, target_name, rank, result,
-                })
-        }
-
         fn game_result_strategy() -> impl Strategy<Value = GameResult> {
             (
                 prop::collection::vec("[a-zA-Z0-9]{1,16}", 0..=4),
@@ -435,31 +364,23 @@ mod render {
                     Just(players),
                     hand_strategy(),
                     prop::collection::vec(complete_book_strategy(), 0..=4),
-                    prop::option::of(hook_outcome_strategy()),
                     prop::option::of(game_result_strategy()),
                     input_state_strat,
                 )
-            }).prop_map(|(player_name, players, hand, completed_books, latest_hook_outcome, game_result, input_state)| {
+            }).prop_map(|(player_name, players, hand, completed_books, game_result, input_state)| {
+                let mut state = GameState::new(player_name.clone(), players.clone());
+                state.active_player = player_name;
+                state.hand = hand;
+                state.completed_books = completed_books;
+                state.game_result = game_result;
+                state.input_state = input_state;
                 let opponents: std::collections::HashMap<String, usize> = players.iter()
-                    .filter(|p| p.as_str() != player_name.as_str())
+                    .filter(|p| p.as_str() != state.player_name.as_str())
                     .map(|p| (p.clone(), 0))
                     .collect();
-                GameState {
-                    active_player: player_name.clone(),
-                    opponent_card_counts: opponents.clone(),
-                    opponent_book_counts: opponents.keys().map(|k| (k.clone(), 0)).collect(),
-                    hook_error: None,
-                    deck_draw_notification: None,
-                    book_completion_notifications: std::collections::VecDeque::new(),
-                    has_received_snapshot: true,
-                    player_name,
-                    players,
-                    hand,
-                    completed_books,
-                    latest_hook_outcome,
-                    game_result,
-                    input_state,
-                }
+                state.opponent_card_counts = opponents.clone();
+                state.opponent_book_counts = opponents.keys().map(|k| (k.clone(), 0)).collect();
+                state
             })
         }
 
@@ -482,8 +403,56 @@ mod widgets {
         layout::{Constraint, Direction, Layout, Margin, Rect},
         style::{Color, Style},
         text::{Line, Span},
-        widgets::{Block, Borders, Clear, Widget},
+        widgets::{Block, Borders, Clear, Paragraph, Widget},
     };
+    use std::collections::VecDeque;
+
+    pub(super) trait IntoNotificationLine {
+        fn into_notification_line(&self) -> Line<'_>;
+    }
+
+    impl IntoNotificationLine for String {
+        fn into_notification_line(&self) -> Line<'_> {
+            Line::from(self.as_str())
+        }
+    }
+
+    impl IntoNotificationLine for Line<'static> {
+        fn into_notification_line(&self) -> Line<'_> {
+            self.clone()
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(super) enum NotificationOrder {
+        NewestFirst,
+        OldestFirst,
+    }
+
+    pub(super) struct NotificationWidget<'a, N: IntoNotificationLine> {
+        notifications: &'a VecDeque<N>,
+        order: NotificationOrder,
+    }
+
+    impl<'a, N: IntoNotificationLine> NotificationWidget<'a, N> {
+        pub(super) fn new(notifications: &'a VecDeque<N>, order: NotificationOrder) -> Self {
+            Self { notifications, order }
+        }
+    }
+
+    impl<N: IntoNotificationLine> Widget for NotificationWidget<'_, N> {
+        fn render(self, area: Rect, buf: &mut Buffer) {
+            let lines: Vec<Line<'_>> = match self.order {
+                NotificationOrder::NewestFirst => self.notifications.iter()
+                    .map(|n| n.into_notification_line())
+                    .collect(),
+                NotificationOrder::OldestFirst => self.notifications.iter().rev()
+                    .map(|n| n.into_notification_line())
+                    .collect(),
+            };
+            Paragraph::new(lines).render(area, buf);
+        }
+    }
 
     pub(super) fn rank_short(rank: Rank) -> &'static str {
         match rank {

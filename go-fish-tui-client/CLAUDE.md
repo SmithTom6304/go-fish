@@ -81,6 +81,23 @@ All widgets are in `ui.rs::widgets` (a private sub-module). They implement ratat
 
 The game screen builds one `PlayerStripWidget` row per player. The local player is always rendered last (bottom row); opponents appear above in rotation order (`strip_order` helper).
 
+- **`NotificationWidget<N: IntoNotificationLine>`** — renders a `VecDeque<N>` as a `Paragraph`, newest-first or oldest-first depending on `NotificationOrder`. `IntoNotificationLine` is implemented for both `String` (unstyled) and `Line<'static>` (preserves spans).
+
+## Notifications
+
+`GameState.notifications` is a `VecDeque<Line<'static>>` capped at `MAX_NOTIFICATION_HISTORY` (3). Each `GameSnapshot` may push up to four kinds of entry via `push_front` + `truncate`; the oldest are evicted when the cap is exceeded. Notifications persist across snapshots until evicted.
+
+Addition order per snapshot (last-pushed = newest = displayed at top):
+
+| # | Event | Example |
+|---|-------|---------|
+| 1 (oldest) | Opponent book completion | `Bob completed a book of Aces!` |
+| 2 | Deck draw | `You drew a King from the deck` |
+| 3 | Hook outcome | `You asked Bob for Kings — Go Fish!` |
+| 4 (newest) | Local book completion | `You completed a book of Kings!` |
+
+Deck draw and local book completions are suppressed on the first snapshot (initial deal). The local player is always represented as `"You"` / `"you"` and rendered in green (`Color::Green`) via styled `Span`s built at notification-construction time in `state.rs`.
+
 ## Testing
 
 - **`state_tests.rs`** — proptest-based tests for `apply_network_event`. Covers all `Screen::Game` message handlers (Properties 11–19), verifying state transitions and that game-only messages are discarded outside the Game screen. Includes a `lobby_player_strategy` that generates both `Human` and `Bot` variants.

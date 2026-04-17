@@ -5,8 +5,10 @@ use go_fish::HookResult;
 use go_fish_web::LobbyLeftReason;
 use go_fish_web::LobbyPlayer;
 use go_fish_web::ServerMessage;
+use ratatui::style::{Color, Style};
+use ratatui::text::{Line, Span};
 
-pub const MAX_BOOK_NOTIFICATIONS: usize = 3;
+pub const MAX_NOTIFICATION_HISTORY: usize = 3;
 
 pub use crate::network::NetworkEvent;
 
@@ -62,13 +64,11 @@ pub struct GameState {
     pub opponent_card_counts: HashMap<String, usize>,
     pub opponent_book_counts: HashMap<String, usize>,
     pub active_player: String,
-    pub latest_hook_outcome: Option<go_fish_web::HookOutcome>,
+    pub notifications: VecDeque<Line<'static>>,
     pub hook_error: Option<go_fish_web::HookError>,
-    pub deck_draw_notification: Option<String>,
-    pub book_completion_notifications: VecDeque<String>,
-    pub has_received_snapshot: bool,
     pub game_result: Option<go_fish_web::GameResult>,
     pub input_state: GameInputState,
+    has_received_snapshot: bool,
 }
 
 impl GameState {
@@ -77,6 +77,8 @@ impl GameState {
             .filter(|p| *p != &player_name)
             .map(|p| (p.clone(), 0))
             .collect();
+        let mut notifications: VecDeque<Line<'static>> = VecDeque::new();
+        notifications.push_front(Line::from("Game started!"));
         GameState {
             player_name,
             players,
@@ -85,10 +87,8 @@ impl GameState {
             opponent_card_counts: opponents.clone(),
             opponent_book_counts: opponents.keys().map(|k| (k.clone(), 0)).collect(),
             active_player: String::new(),
-            latest_hook_outcome: None,
+            notifications,
             hook_error: None,
-            deck_draw_notification: None,
-            book_completion_notifications: VecDeque::new(),
             has_received_snapshot: false,
             game_result: None,
             input_state: GameInputState::Idle,
@@ -215,21 +215,27 @@ fn apply_server_message(state: &mut AppState, msg: &ServerMessage) {
                     game.opponent_card_counts.insert(opp.name.clone(), opp.card_count);
                     game.opponent_book_counts.insert(opp.name.clone(), opp.completed_books.len());
                 }
-                if let Some(ref outcome) = snapshot.last_hook_outcome {
-                    game.latest_hook_outcome = Some(outcome.clone());
-                }
                 game.active_player = snapshot.active_player.clone();
                 if snapshot.active_player == game.player_name {
                     game.hook_error = None;
                 }
                 game.input_state = GameInputState::Idle;
 
-                // Compute notifications (skip first snapshot — initial deal)
+                // Add notifications in order (skip deck draw + book completions on first snapshot)
                 if game.has_received_snapshot {
-                    compute_deck_draw_notification(game, &prev_rank_counts, prev_book_count, snapshot);
-                    compute_book_completion_notifications(game, prev_book_count, &prev_opponent_books, snapshot);
+                    process_snapshot_notifications(
+                        game,
+                        &prev_rank_counts,
+                        prev_book_count,
+                        &prev_opponent_books,
+                        snapshot,
+                    );
                 } else {
-                    game.deck_draw_notification = None;
+                    // Still add the hook outcome even on first snapshot (though there won't be one)
+                    if let Some(ref outcome) = snapshot.last_hook_outcome {
+                        let player_name = game.player_name.clone();
+                        push_notification(game, format_hook_outcome(outcome, &player_name));
+                    }
                 }
                 game.has_received_snapshot = true;
             }
@@ -330,17 +336,70 @@ fn apply_connection_error(state: &mut AppState, err: &str) {
     }
 }
 
-fn compute_deck_draw_notification(
+fn push_notification(game: &mut GameState, line: Line<'static>) {
+    game.notifications.push_front(line);
+    game.notifications.truncate(MAX_NOTIFICATION_HISTORY);
+}
+
+fn process_snapshot_notifications(
     game: &mut GameState,
     prev_rank_counts: &HashMap<go_fish::Rank, usize>,
     prev_book_count: usize,
+    prev_opponent_books: &HashMap<String, usize>,
     snapshot: &go_fish_web::GameSnapshot,
 ) {
+    let green = Style::default().fg(Color::Green);
+
+    // 1. Opponent book completions
+    for opp in &snapshot.opponents {
+        let prev = prev_opponent_books.get(&opp.name).copied().unwrap_or(0);
+        if opp.completed_books.len() > prev {
+            for book in &opp.completed_books[prev..] {
+                push_notification(game, Line::from(format!("{} completed a book of {}s!", opp.name, book.rank)));
+            }
+        }
+    }
+
+    // 2. Deck draw
+    if let Some(drawn_rank) = detect_deck_draw(game, prev_rank_counts, prev_book_count, snapshot) {
+        push_notification(game, Line::from(vec![
+            Span::styled("You", green),
+            Span::raw(format!(" drew a {} from the deck", drawn_rank)),
+        ]));
+    }
+
+    // 3. Hook outcome
+    if let Some(ref outcome) = snapshot.last_hook_outcome {
+        let player_name = game.player_name.clone();
+        push_notification(game, format_hook_outcome(outcome, &player_name));
+    }
+
+    // 4. Local book completions
+    let local_book_lines: Vec<Line<'static>> = if game.completed_books.len() > prev_book_count {
+        game.completed_books[prev_book_count..].iter()
+            .map(|b| Line::from(vec![
+                Span::styled("You", green),
+                Span::raw(format!(" completed a book of {}s!", b.rank)),
+            ]))
+            .collect()
+    } else {
+        vec![]
+    };
+    for line in local_book_lines {
+        push_notification(game, line);
+    }
+}
+
+fn detect_deck_draw(
+    game: &GameState,
+    prev_rank_counts: &HashMap<go_fish::Rank, usize>,
+    prev_book_count: usize,
+    snapshot: &go_fish_web::GameSnapshot,
+) -> Option<go_fish::Rank> {
     let new_rank_counts: HashMap<go_fish::Rank, usize> = game.hand.books.iter()
         .map(|b| (b.rank, b.cards.len()))
         .collect();
 
-    // Rank caught via hook (if local player was the fisher)
     let hook_catch_rank: Option<go_fish::Rank> = snapshot.last_hook_outcome.as_ref()
         .filter(|o| o.fisher_name == game.player_name)
         .and_then(|o| match &o.result {
@@ -348,61 +407,59 @@ fn compute_deck_draw_notification(
             HookResult::GoFish => None,
         });
 
-    let mut drawn_rank: Option<go_fish::Rank> = None;
-
-    // Check ranks in the new hand that gained cards not explained by a hook catch
+    // Check ranks in new hand that gained cards not from a hook catch
     for (rank, &new_count) in &new_rank_counts {
         let old_count = prev_rank_counts.get(rank).copied().unwrap_or(0);
         if new_count > old_count && hook_catch_rank != Some(*rank) {
-            drawn_rank = Some(*rank);
+            return Some(*rank);
         }
     }
 
-    // Check ranks that completed into books (disappeared from hand)
+    // Check ranks that completed into books (disappeared from hand entirely)
     let new_book_count = game.completed_books.len();
     if new_book_count > prev_book_count {
         for book in &game.completed_books[prev_book_count..] {
             if hook_catch_rank != Some(book.rank) && !new_rank_counts.contains_key(&book.rank) {
                 let old_count = prev_rank_counts.get(&book.rank).copied().unwrap_or(0);
                 if old_count == 3 {
-                    drawn_rank = Some(book.rank);
+                    return Some(book.rank);
                 }
             }
         }
     }
 
-    game.deck_draw_notification = drawn_rank.map(|r| format!("You drew a {} from the deck", r));
+    None
 }
 
-fn compute_book_completion_notifications(
-    game: &mut GameState,
-    prev_book_count: usize,
-    prev_opponent_books: &HashMap<String, usize>,
-    snapshot: &go_fish_web::GameSnapshot,
-) {
-    // Check local player
-    if game.completed_books.len() > prev_book_count {
-        for book in &game.completed_books[prev_book_count..] {
-            game.book_completion_notifications.push_back(
-                format!("You completed a book of {}s!", book.rank));
-            if game.book_completion_notifications.len() > MAX_BOOK_NOTIFICATIONS {
-                game.book_completion_notifications.pop_front();
-            }
+fn format_hook_outcome(outcome: &go_fish_web::HookOutcome, player_name: &str) -> Line<'static> {
+    let green = Style::default().fg(Color::Green);
+    let fisher_span: Span<'static> = if outcome.fisher_name == player_name {
+        Span::styled("You", green)
+    } else {
+        Span::raw(outcome.fisher_name.clone())
+    };
+    let target_span: Span<'static> = if outcome.target_name == player_name {
+        Span::styled("you", green)
+    } else {
+        Span::raw(outcome.target_name.clone())
+    };
+    match &outcome.result {
+        HookResult::Catch(book) => {
+            let n = book.cards.len();
+            let s = if n == 1 { "" } else { "s" };
+            Line::from(vec![
+                fisher_span,
+                Span::raw(" asked "),
+                target_span,
+                Span::raw(format!(" for {}s — Caught {} card{}!", outcome.rank, n, s)),
+            ])
         }
-    }
-
-    // Check opponents
-    for opp in &snapshot.opponents {
-        let prev_count = prev_opponent_books.get(&opp.name).copied().unwrap_or(0);
-        if opp.completed_books.len() > prev_count {
-            for book in &opp.completed_books[prev_count..] {
-                game.book_completion_notifications.push_back(
-                    format!("{} completed a book of {}s!", opp.name, book.rank));
-                if game.book_completion_notifications.len() > MAX_BOOK_NOTIFICATIONS {
-                    game.book_completion_notifications.pop_front();
-                }
-            }
-        }
+        HookResult::GoFish => Line::from(vec![
+            fisher_span,
+            Span::raw(" asked "),
+            target_span,
+            Span::raw(format!(" for {}s — Go Fish!", outcome.rank)),
+        ]),
     }
 }
 

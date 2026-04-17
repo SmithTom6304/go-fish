@@ -69,7 +69,18 @@ The client is structured around four concerns:
 
 **Input** (`input.rs`) — `handle_key` is the single dispatch point for all keyboard logic on both native and WASM. A `GameInputState` sub-machine inside the Game screen tracks whether the player is idle, selecting a target, or selecting a rank.
 
-**Rendering** (`ui.rs`) — `render` dispatches to a per-screen render function. The game screen builds a row of `PlayerStripWidget`s (one per player) and a status bar. Widgets implement ratatui's `Widget` trait and write directly to the cell buffer.
+**Rendering** (`ui.rs`) — `render` dispatches to a per-screen render function. The game screen builds a row of `PlayerStripWidget`s (one per player) and a notification bar. Widgets implement ratatui's `Widget` trait and write directly to the cell buffer.
+
+## Notifications
+
+During a game, a rolling history of the last 3 events is displayed below the player strips. Each snapshot can produce up to four kinds of notification, shown newest-first:
+
+1. **Local book completion** — "You completed a book of Kings!" (shown newest)
+2. **Hook outcome** — "You asked Bob for Kings — Go Fish!" / "Alice asked you for Twos — Caught 2 cards!"
+3. **Deck draw** — "You drew a King from the deck"
+4. **Opponent book completion** — "Bob completed a book of Aces!"
+
+The local player ("you"/"You") is always rendered in green. Notifications persist across turns and are only evicted when newer ones push them beyond the history limit.
 
 ## Development
 
