@@ -562,9 +562,9 @@ fn deck_draw_notification_added() {
 
     match &state.screen {
         Screen::Game(g) => {
-            // Notifications (newest first): hook outcome, deck draw
-            assert!(line_text(&g.notifications[0]).contains("Kings"), "hook outcome at front");
-            assert!(line_text(&g.notifications[1]).contains("drew a King"), "deck draw second: {:?}", g.notifications[1]);
+            // Notifications (newest first): deck draw, hook outcome
+            assert!(line_text(&g.notifications[0]).contains("drew a King"), "deck draw at front: {:?}", g.notifications[0]);
+            assert!(line_text(&g.notifications[1]).contains("Kings"), "hook outcome second");
         }
         other => panic!("Expected Screen::Game, got {:?}", other),
     }

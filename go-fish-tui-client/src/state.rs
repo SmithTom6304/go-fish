@@ -360,18 +360,18 @@ fn process_snapshot_notifications(
         }
     }
 
-    // 2. Deck draw
+    // 2. Hook outcome
+    if let Some(ref outcome) = snapshot.last_hook_outcome {
+        let player_name = game.player_name.clone();
+        push_notification(game, format_hook_outcome(outcome, &player_name));
+    }
+
+    // 3. Deck draw
     if let Some(drawn_rank) = detect_deck_draw(game, prev_rank_counts, prev_book_count, snapshot) {
         push_notification(game, Line::from(vec![
             Span::styled("You", green),
             Span::raw(format!(" drew a {} from the deck", drawn_rank)),
         ]));
-    }
-
-    // 3. Hook outcome
-    if let Some(ref outcome) = snapshot.last_hook_outcome {
-        let player_name = game.player_name.clone();
-        push_notification(game, format_hook_outcome(outcome, &player_name));
     }
 
     // 4. Local book completions

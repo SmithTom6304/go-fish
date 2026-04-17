@@ -92,8 +92,8 @@ Addition order per snapshot (last-pushed = newest = displayed at top):
 | # | Event | Example |
 |---|-------|---------|
 | 1 (oldest) | Opponent book completion | `Bob completed a book of Aces!` |
-| 2 | Deck draw | `You drew a King from the deck` |
-| 3 | Hook outcome | `You asked Bob for Kings — Go Fish!` |
+| 2 | Hook outcome | `You asked Bob for Kings — Go Fish!` |
+| 3 | Deck draw | `You drew a King from the deck` |
 | 4 (newest) | Local book completion | `You completed a book of Kings!` |
 
 Deck draw and local book completions are suppressed on the first snapshot (initial deal). The local player is always represented as `"You"` / `"you"` and rendered in green (`Color::Green`) via styled `Span`s built at notification-construction time in `state.rs`.
