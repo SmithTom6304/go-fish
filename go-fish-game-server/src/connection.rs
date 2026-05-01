@@ -93,7 +93,7 @@ pub async fn run_connection_handler<S, T>(
             frame = ws.next() => {
                 match frame {
                     Some(Ok(Message::Text(text))) => {
-                        debug!(%text, "ClientMessage received");
+                        debug!(event = "client_message_received", %text);
                         if event_tx.send(ClientEvent::Message { address, text: text.to_string() }).await.is_err() {
                             // Manager is gone, exit cleanly
                             break;
@@ -114,7 +114,7 @@ pub async fn run_connection_handler<S, T>(
                         continue;
                     }
                     Some(Err(e)) => {
-                        error!(error = %e, "WebSocket stream error");
+                        error!(event = "websocket_stream_error", error = %e);
                         let _ = event_tx.send(ClientEvent::Disconnected {
                             address,
                             reason: DisconnectReason::Error(e.to_string()),
@@ -123,7 +123,7 @@ pub async fn run_connection_handler<S, T>(
                     }
                     None => {
                         // Stream ended without a Close frame (force close)
-                        info!("WebSocket stream closed without Close frame (force close)");
+                        warn!(event = "websocket_force_closed", %address);
                         let _ = event_tx.send(ClientEvent::Disconnected {
                             address,
                             reason: DisconnectReason::ForceClosed,
@@ -151,7 +151,7 @@ pub async fn run_connection_handler<S, T>(
             }
             _ = ping_interval.tick() => {
                 if pending_pings >= MAX_PENDING_PINGS {
-                    info!("Client unresponsive — closing connection");
+                    info!(event = "client_ping_timeout", %address);
                     let _ = event_tx.send(ClientEvent::Disconnected {
                         address,
                         reason: DisconnectReason::Error("ping timeout".to_string()),
@@ -219,7 +219,7 @@ where
                             // Send Disconnect to all connected clients, then exit
                             for (address, handle) in &self.clients {
                                 if handle.tx.send(ServerMessage::Disconnect).await.is_err() {
-                                    warn!(%address, "failed to send Disconnect during shutdown");
+                                    warn!(event = "shutdown_disconnect_failed", %address);
                                 }
                             }
                             break;
@@ -233,9 +233,9 @@ where
                             if self.clients.len() >= self.max_client_connections {
                                 let mut ws = ws;
                                 ws.close(None).await.ok();
-                                debug!(%address, connections = self.clients.len(),
-                                    max_connections = self.max_client_connections,
-                                    "client rejected: max connections reached");
+                                warn!(event = "client_rejected_max_connections", %address,
+                                    connections = self.clients.len(),
+                                    max_connections = self.max_client_connections);
                                 continue;
                             }
                             // Per-client outbound channel: LobbyManager → serializer → WebSocket
@@ -251,7 +251,7 @@ where
                                             }
                                         }
                                         Err(e) => {
-                                            warn!(error = %e, "failed to serialize outbound message");
+                                            warn!(event = "serialize_outbound_failed", error = %e);
                                         }
                                     }
                                 }
@@ -260,27 +260,28 @@ where
                             let event_tx = self.event_tx.clone();
                             tokio::spawn(run_connection_handler(address, ws, event_tx, handler_rx));
                             drop(tx);
-                            info!(%address, connections = self.clients.len(),
-                                    max_connections = self.max_client_connections, "client connected");
+                            info!(event = "client_connected", %address,
+                                    connections = self.clients.len(),
+                                    max_connections = self.max_client_connections);
                             if self.lobby_tx.send(LobbyEvent::ClientConnected { address, message_tx: web_tx }).await.is_err() {
-                                warn!(%address, "failed to forward ClientConnected to lobby");
+                                warn!(event = "lobby_forward_failed", %address, message = "ClientConnected");
                             }
                         }
                         Some(ClientEvent::Message { address, text }) => {
                             match serde_json::from_str::<go_fish_web::ClientMessage>(&text) {
                                 Ok(message) => {
                                     if self.lobby_tx.send(LobbyEvent::ClientMessage { address, message }).await.is_err() {
-                                        warn!(%address, "failed to forward ClientMessage to lobby");
+                                        warn!(event = "lobby_forward_failed", %address, message = "ClientMessage");
                                     }
                                 }
                                 Err(e) => {
-                                    warn!(%address, error = %e, raw = %text, "failed to parse client message");
+                                    warn!(event = "client_message_parse_failed", %address, error = %e, raw = %text);
                                     if let Some(handle) = self.clients.get(&address) {
                                         let error_json = serde_json::to_string(
                                             &go_fish_web::ServerMessage::Error("invalid message".to_string())
                                         ).unwrap_or_else(|_| r#"{"Error":"invalid message"}"#.to_string());
                                         if handle.tx.send(ServerMessage::Text(error_json)).await.is_err() {
-                                            warn!(%address, "failed to send parse error to client");
+                                            warn!(event = "send_failed", %address);
                                         }
                                     }
                                 }
@@ -288,9 +289,9 @@ where
                         }
                         Some(ClientEvent::Disconnected { address, reason }) => {
                             self.clients.remove(&address);
-                            info!(%address, reason = ?reason, "client disconnected");
+                            info!(event = "client_disconnected", %address, reason = ?reason);
                             if self.lobby_tx.send(LobbyEvent::ClientDisconnected { address, reason }).await.is_err() {
-                                warn!(%address, "failed to forward ClientDisconnected to lobby");
+                                warn!(event = "lobby_forward_failed", %address, message = "ClientDisconnected");
                             }
                         }
                     }
@@ -310,11 +311,11 @@ pub async fn run_tcp_listener(
     let listener = match tokio::net::TcpListener::bind(addr).await {
         Ok(l) => l,
         Err(e) => {
-            error!(error = %e, "Failed to bind TCP listener");
+            error!(event = "tcp_bind_failed", error = %e);
             return;
         }
     };
-    info!(%addr, "TCP listener bound");
+    info!(event = "tcp_listener_bound", %addr);
     run_tcp_listener_inner(listener, event_tx, command_rx).await
 }
 
@@ -330,7 +331,7 @@ pub async fn run_tcp_listener_inner(
             cmd = command_rx.recv() => {
                 match cmd {
                     Some(ManagerCommand::Shutdown) | None => {
-                        info!(%addr, "TCP listener shutting down");
+                        info!(event = "tcp_listener_shutdown", %addr);
                         break;
                     }
                 }
@@ -339,7 +340,7 @@ pub async fn run_tcp_listener_inner(
                 let (stream, address) = match accept {
                     Ok(pair) => pair,
                     Err(e) => {
-                        error!(error = %e, "Failed to accept TCP connection");
+                        error!(event = "tcp_accept_failed", error = %e);
                         continue;
                     }
                 };
@@ -356,7 +357,7 @@ pub async fn run_tcp_listener_inner(
                         }
                     }
                     Err(e) => {
-                        error!(%address, error = %e, "WebSocket handshake failed");
+                        error!(event = "websocket_handshake_failed", %address, error = %e);
                     }
                 }
             }

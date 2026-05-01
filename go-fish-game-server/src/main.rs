@@ -4,7 +4,7 @@ use opentelemetry::{global, trace::TracerProvider as _};
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use opentelemetry_otlp::WithHttpConfig;
 use opentelemetry_sdk::{logs::SdkLoggerProvider, trace::SdkTracerProvider};
-use tracing::warn;
+use tracing::{info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 #[derive(Parser)]
@@ -91,18 +91,23 @@ async fn run_server() -> Result<(), anyhow::Error> {
             Ok(contents) => match toml::from_str::<Config>(&contents) {
                 Ok(cfg) => cfg,
                 Err(e) => {
-                    warn!(error = %e, path = %path.display(), "Failed to parse config file, using defaults");
+                    warn!(event = "config_parse_failed", error = %e, path = %path.display(), "Failed to parse config file. Using defaults.");
                     Config::default()
                 }
             },
             Err(e) => {
-                warn!(error = %e, path = %path.display(), "Failed to read config file, using defaults");
+                warn!(event = "config_read_failed", error = %e, path = %path.display(), "Failed to read config file. Using defaults.");
                 Config::default()
             }
         },
         None => Config::default(),
     };
 
-    tracing::info!(config = ?config, "Starting go-fish-game-server");
+    info!(
+        event = "server_started",
+        address = %config.address,
+        max_client_connections = %config.max_client_connections,
+        lobby_max_players = %config.lobby_max_players
+    );
     run(config).await
 }

@@ -87,11 +87,11 @@ pub async fn run(config: Config) -> Result<(), anyhow::Error> {
     tokio::select! {
         _ = manager.run() => {}
         _ = tokio::signal::ctrl_c() => {
-            info!("received SIGINT, shutting down gracefully");
+            info!(event = "shutdown", signal = "SIGINT");
             shutdown(listener_cmd_tx, command_tx, lobby_cmd_tx).await;
         }
         _ = sigterm.recv() => {
-            info!("received SIGTERM, shutting down gracefully");
+            info!(event = "shutdown", signal = "SIGTERM");
             shutdown(listener_cmd_tx, command_tx, lobby_cmd_tx).await;
         }
     }

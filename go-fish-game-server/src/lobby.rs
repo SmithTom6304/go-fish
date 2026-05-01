@@ -227,7 +227,7 @@ impl LobbyManager {
                     phase: ClientPhase::IdentityNegotiation,
                     sender: message_tx,
                 });
-                debug!(%address, "client entered identity negotiation phase");
+                debug!(event = "client_registered", %address);
             }
 
             LobbyEvent::ClientMessage { address, message } => {
@@ -249,7 +249,7 @@ impl LobbyManager {
                     }
                     self.names_in_use.insert(name.clone());
                     self.send(address, ServerMessage::PlayerIdentity(name.clone())).await;
-                    info!(%address, name = %name, "player identity assigned");
+                    info!(event = "player_identity_assigned", %address, name = %name);
                     return;
                 }
 
@@ -278,7 +278,7 @@ impl LobbyManager {
                             }
                         }
                         ClientPhase::InGame { lobby_id } => {
-                            info!(%address, lobby_id = %lobby_id, "player disconnected mid-game, ending session");
+                            info!(event = "player_disconnected_mid_game", %address, lobby_id = %lobby_id);
                             // Remove disconnecting player from participants so they don't receive GameAborted
                             let disc_name = self.players.get(&address).map(|r| r.name.clone());
                             if let Some(lobby) = self.lobbies.get_mut(&lobby_id)
@@ -333,7 +333,7 @@ impl LobbyManager {
                     record.phase = ClientPhase::InLobby { lobby_id: lobby_id.clone() };
                 }
 
-                info!(lobby_id = %lobby_id, leader = %name, "lobby created");
+                info!(event = "lobby_created", lobby_id = %lobby_id, leader = %name);
 
                 self.send(address, ServerMessage::LobbyJoined {
                     lobby_id,
@@ -402,7 +402,7 @@ impl LobbyManager {
                     (leader_name, player_list, other_addrs, lobby.max_players, lobby.participant_count())
                 };
 
-                info!(lobby_id = %lobby_id, player = %joining_name, "player joined lobby");
+                info!(event = "player_joined_lobby", lobby_id = %lobby_id, player = %joining_name);
 
                 // Send LobbyJoined to joining player
                 self.send(address, ServerMessage::LobbyJoined {
@@ -464,7 +464,7 @@ impl LobbyManager {
                 // Send LeftLobby to client
                 self.send(address, ServerMessage::LobbyLeft(LobbyLeftReason::RequestedByPlayer)).await;
 
-                info!(lobby_id = %lobby_id, player = %player_name, "player left lobby");
+                info!(event = "player_left_lobby", lobby_id = %lobby_id, player = %player_name);
             }
 
             ClientMessage::AddBot { bot_type } => {
@@ -707,7 +707,12 @@ impl LobbyManager {
         let result = match result {
             Ok(r) => r,
             Err(e) => {
-                warn!(error = ?e, "take_turn error");
+                warn!(event = "take_turn_error", error = ?e, lobby_id, sender_name, target_name = target_name_str);
+                if tracing::enabled!(tracing::Level::DEBUG) {
+                    if let Some(LobbyState::InGame(session)) = self.lobbies.get(&lobby_id).map(|l| &l.state) {
+                        debug!(event = "take_turn_error", game = ?session.game);
+                    }
+                }
                 return;
             }
         };
@@ -873,6 +878,10 @@ impl LobbyManager {
             (participant_names, game_result_msg)
         };
 
+        if let ServerMessage::GameResult(r) = &game_result_msg {
+            info!(event = "game_result", lobby_id = %lobby_id, winners = ?r.winners, losers = ?r.losers);
+        }
+
         // Send result/abort to all remaining participants
         if let Some(lobby) = self.lobbies.get(&lobby_id)
             && let LobbyState::InGame(session) = &lobby.state {
@@ -894,7 +903,7 @@ impl LobbyManager {
             };
         }
 
-        info!(lobby_id = %lobby_id, disconnection, "game session ended");
+        info!(event = "game_session_ended", lobby_id = %lobby_id, reason = if disconnection { "disconnection" } else { "completed" });
     }
 
     /// Remove a human player from a lobby waiting room.
@@ -1100,13 +1109,13 @@ impl LobbyManager {
             None,
         ).await;
 
-        info!(lobby_id = %lobby_id, player_count = %total, "game session started");
+        info!(event = "game_session_started", lobby_id = %lobby_id, player_count = %total);
     }
 
     async fn send(&self, address: SocketAddr, message: ServerMessage) {
         if let Some(record) = self.players.get(&address)
             && record.sender.send(message).await.is_err() {
-                tracing::warn!(%address, "failed to send message — client channel closed");
+                tracing::warn!(event = "send_failed", %address);
             }
     }
 }
