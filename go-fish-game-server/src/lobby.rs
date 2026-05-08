@@ -1,7 +1,7 @@
 use crate::connection::LobbyEvent;
 use crate::{BotConfig, SimpleBotConfig};
 use go_fish::bots::{Bot, BotObservation, OpponentView};
-use go_fish_web::{ClientHookRequest, ClientMessage, LobbyLeftReason, LobbyPlayer, ServerMessage};
+use go_fish_web::{ClientHookRequest, ClientMessage, LobbyInfo, LobbyLeftReason, LobbyPlayer, ServerMessage};
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use tokio::sync::mpsc;
@@ -602,6 +602,31 @@ impl LobbyManager {
                 };
                 let sender_name = self.players[&address].name.clone();
                 self.process_hook(lobby_id, sender_name, hook_request).await;
+            }
+
+            ClientMessage::RequestLobbies => {
+                let phase = self.players.get(&address).map(|r| r.phase.clone());
+                if !matches!(phase, Some(ClientPhase::PreLobby)) {
+                    return;
+                }
+                let lobbies: Vec<LobbyInfo> = self
+                    .lobbies
+                    .values()
+                    .filter_map(|lobby| {
+                        if let LobbyState::Waiting { .. } = &lobby.state {
+                            let count = lobby.participant_count();
+                            if count < lobby.max_players {
+                                return Some(LobbyInfo {
+                                    lobby_id: lobby.lobby_id.clone(),
+                                    player_count: count,
+                                    max_players: lobby.max_players,
+                                });
+                            }
+                        }
+                        None
+                    })
+                    .collect();
+                self.send(address, ServerMessage::LobbyList(lobbies)).await;
             }
 
             ClientMessage::Identity => {
@@ -2946,6 +2971,165 @@ mod tests {
             matches!(msg.message, ServerMessage::LobbyJoined { .. }),
             "expected LobbyJoined (player A should be back in PreLobby), got {:?}", msg.message
         );
+
+        cmd_tx.send(LobbyCommand::Shutdown).await.unwrap();
+    }
+
+    // =========================================================================
+    // Unit tests: RequestLobbies
+    // =========================================================================
+
+    // -------------------------------------------------------------------------
+    // Test: RequestLobbies with no lobbies returns empty list
+    // -------------------------------------------------------------------------
+    #[tokio::test]
+    async fn request_lobbies_empty() {
+        let (event_tx, cmd_tx, _handle) = make_lobby_manager(4);
+        let (outbound_tx, mut outbound_rx) = make_shared_channel();
+        let addr_a = addr(200);
+
+        connect_and_identify(&event_tx, &outbound_tx, &mut outbound_rx, addr_a).await;
+
+        event_tx.send(LobbyEvent::ClientMessage {
+            address: addr_a,
+            message: ClientMessage::RequestLobbies,
+        }).await.unwrap();
+
+        let msg = timeout(Duration::from_secs(2), outbound_rx.recv())
+            .await.expect("timed out").expect("channel closed");
+        assert_eq!(msg.address, addr_a);
+        match msg.message {
+            ServerMessage::LobbyList(lobbies) => assert!(lobbies.is_empty()),
+            other => panic!("expected LobbyList, got {:?}", other),
+        }
+
+        cmd_tx.send(LobbyCommand::Shutdown).await.unwrap();
+    }
+
+    // -------------------------------------------------------------------------
+    // Test: RequestLobbies returns available (Waiting, not full) lobbies
+    // -------------------------------------------------------------------------
+    #[tokio::test]
+    async fn request_lobbies_returns_available_lobbies() {
+        let (event_tx, cmd_tx, _handle) = make_lobby_manager(4);
+        let (outbound_tx, mut outbound_rx) = make_shared_channel();
+        let addr_a = addr(201);
+        let addr_b = addr(202);
+
+        // A creates a lobby
+        connect_and_identify(&event_tx, &outbound_tx, &mut outbound_rx, addr_a).await;
+        event_tx.send(LobbyEvent::ClientMessage {
+            address: addr_a,
+            message: ClientMessage::CreateLobby,
+        }).await.unwrap();
+        let joined_msg = timeout(Duration::from_secs(2), outbound_rx.recv())
+            .await.expect("timed out").expect("channel closed");
+        let lobby_id = match joined_msg.message {
+            ServerMessage::LobbyJoined { lobby_id, .. } => lobby_id,
+            other => panic!("expected LobbyJoined, got {:?}", other),
+        };
+
+        // B requests lobby list
+        connect_and_identify(&event_tx, &outbound_tx, &mut outbound_rx, addr_b).await;
+        event_tx.send(LobbyEvent::ClientMessage {
+            address: addr_b,
+            message: ClientMessage::RequestLobbies,
+        }).await.unwrap();
+
+        let msg = timeout(Duration::from_secs(2), outbound_rx.recv())
+            .await.expect("timed out").expect("channel closed");
+        assert_eq!(msg.address, addr_b);
+        match msg.message {
+            ServerMessage::LobbyList(lobbies) => {
+                assert_eq!(lobbies.len(), 1);
+                assert_eq!(lobbies[0].lobby_id, lobby_id);
+                assert_eq!(lobbies[0].player_count, 1);
+                assert_eq!(lobbies[0].max_players, 4);
+            }
+            other => panic!("expected LobbyList, got {:?}", other),
+        }
+
+        cmd_tx.send(LobbyCommand::Shutdown).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn request_lobbies_filters_full_lobby() {
+        let (event_tx, cmd_tx, _handle) = make_lobby_manager(2);
+        let (outbound_tx, mut outbound_rx) = make_shared_channel();
+        let addr_a = addr(206);
+        let addr_b = addr(207);
+        let addr_c = addr(208);
+
+        // A creates lobby
+        connect_and_identify(&event_tx, &outbound_tx, &mut outbound_rx, addr_a).await;
+        event_tx.send(LobbyEvent::ClientMessage {
+            address: addr_a,
+            message: ClientMessage::CreateLobby,
+        }).await.unwrap();
+        let lobby_id = match timeout(Duration::from_secs(2), outbound_rx.recv())
+            .await.expect("timed out").expect("channel closed").message
+        {
+            ServerMessage::LobbyJoined { lobby_id, .. } => lobby_id,
+            other => panic!("expected LobbyJoined, got {:?}", other),
+        };
+
+        // B joins — lobby is now full (2/2), auto-start fires
+        connect_and_identify(&event_tx, &outbound_tx, &mut outbound_rx, addr_b).await;
+        event_tx.send(LobbyEvent::ClientMessage {
+            address: addr_b,
+            message: ClientMessage::JoinLobby(lobby_id),
+        }).await.unwrap();
+        // Drain all auto-start messages (LobbyJoined B, LobbyUpdated A, GameStarted x2, GameSnapshot x2)
+        for _ in 0..6 {
+            let _ = timeout(Duration::from_secs(2), outbound_rx.recv())
+                .await.expect("timed out").expect("channel closed");
+        }
+
+        // C requests lobbies — the lobby is InGame, should be excluded
+        connect_and_identify(&event_tx, &outbound_tx, &mut outbound_rx, addr_c).await;
+        event_tx.send(LobbyEvent::ClientMessage {
+            address: addr_c,
+            message: ClientMessage::RequestLobbies,
+        }).await.unwrap();
+
+        let msg = timeout(Duration::from_secs(2), outbound_rx.recv())
+            .await.expect("timed out").expect("channel closed");
+        assert_eq!(msg.address, addr_c);
+        match msg.message {
+            ServerMessage::LobbyList(lobbies) => assert!(lobbies.is_empty(), "in-game lobby should be filtered"),
+            other => panic!("expected LobbyList, got {:?}", other),
+        }
+
+        cmd_tx.send(LobbyCommand::Shutdown).await.unwrap();
+    }
+
+    // -------------------------------------------------------------------------
+    // Test: RequestLobbies in non-PreLobby phase is silently dropped
+    // -------------------------------------------------------------------------
+    #[tokio::test]
+    async fn request_lobbies_ignored_outside_pre_lobby() {
+        let (event_tx, cmd_tx, _handle) = make_lobby_manager(4);
+        let (outbound_tx, mut outbound_rx) = make_shared_channel();
+        let addr_a = addr(209);
+
+        // A is in a lobby
+        connect_and_identify(&event_tx, &outbound_tx, &mut outbound_rx, addr_a).await;
+        event_tx.send(LobbyEvent::ClientMessage {
+            address: addr_a,
+            message: ClientMessage::CreateLobby,
+        }).await.unwrap();
+        timeout(Duration::from_secs(2), outbound_rx.recv())
+            .await.expect("timed out").expect("channel closed"); // LobbyJoined
+
+        // Now in InLobby phase — RequestLobbies should be silently dropped
+        event_tx.send(LobbyEvent::ClientMessage {
+            address: addr_a,
+            message: ClientMessage::RequestLobbies,
+        }).await.unwrap();
+
+        // No message should arrive within a short window
+        let result = timeout(Duration::from_millis(200), outbound_rx.recv()).await;
+        assert!(result.is_err(), "expected no response to RequestLobbies in InLobby phase");
 
         cmd_tx.send(LobbyCommand::Shutdown).await.unwrap();
     }

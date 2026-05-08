@@ -38,6 +38,14 @@ impl LobbyPlayer {
     }
 }
 
+/// A lobby visible in the lobby browser.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct LobbyInfo {
+    pub lobby_id: String,
+    pub player_count: usize,
+    pub max_players: usize,
+}
+
 /// Messages sent from the client to the server.
 #[derive(Debug, Serialize, Deserialize)]
 pub enum ClientMessage {
@@ -49,6 +57,7 @@ pub enum ClientMessage {
     StartGame,
     AddBot { bot_type: BotType },
     RemoveBot,
+    RequestLobbies,
 }
 
 /// Messages sent from the server to the client.
@@ -75,6 +84,7 @@ pub enum ServerMessage {
     GameSnapshot(GameSnapshot),
     GameAborted,
     Error(String),
+    LobbyList(Vec<LobbyInfo>),
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]

@@ -169,7 +169,7 @@ mod tests {
     use proptest::prelude::*;
     use go_fish::Rank;
     use go_fish_web::{
-        BotType, ClientMessage, ClientHookRequest, LobbyPlayer,
+        BotType, ClientMessage, ClientHookRequest, LobbyInfo, LobbyPlayer,
         ServerMessage, HookAndResult, HookError, HandState, PlayerTurnValue,
         FullHookRequest, GameResult, GameSnapshot, HookOutcome, OpponentState,
     };
@@ -240,6 +240,15 @@ mod tests {
         ]
     }
 
+    fn lobby_info_strategy() -> impl Strategy<Value = LobbyInfo> {
+        ("[a-zA-Z0-9]{1,16}", 1usize..=4usize, 2usize..=8usize)
+            .prop_map(|(lobby_id, player_count, max_players)| LobbyInfo {
+                lobby_id,
+                player_count: player_count.min(max_players),
+                max_players,
+            })
+    }
+
     fn client_message_strategy() -> impl Strategy<Value = ClientMessage> {
         prop_oneof![
             client_hook_request_strategy().prop_map(ClientMessage::Hook),
@@ -250,6 +259,7 @@ mod tests {
             Just(()).prop_map(|_| ClientMessage::StartGame),
             bot_type_strategy().prop_map(|bot_type| ClientMessage::AddBot { bot_type }),
             Just(()).prop_map(|_| ClientMessage::RemoveBot),
+            Just(()).prop_map(|_| ClientMessage::RequestLobbies),
         ]
     }
 
@@ -345,6 +355,8 @@ mod tests {
             Just(()).prop_map(|_| ServerMessage::GameStarted),
             "[a-zA-Z0-9 ]{1,32}".prop_map(ServerMessage::Error),
             game_snapshot_strategy().prop_map(ServerMessage::GameSnapshot),
+            prop::collection::vec(lobby_info_strategy(), 0..=5)
+                .prop_map(ServerMessage::LobbyList),
         ]
     }
 

@@ -94,6 +94,10 @@ When `StartGame` fires, each pending `BotSlot` is converted to a `BotDriver` Tok
 
 `BotDriver` holds a `Box<dyn Bot>`, a `PlayerId`, the game's `LobbyEvent` sender, and the shared `GameSession` snapshot (protected by `Arc<Mutex>`).
 
+## Lobby browser
+
+`ClientMessage::RequestLobbies` is handled in `LobbyManager::handle_player_message`. It is only processed in the `PreLobby` phase; in any other phase it is silently dropped. The response is `ServerMessage::LobbyList(Vec<LobbyInfo>)`, containing all lobbies currently in `Waiting` state with at least one open slot. Full lobbies and lobbies mid-game are excluded.
+
 ## Keepalive
 
 `ConnectionHandler` sends a `Ping` frame every 45 seconds. After 3 consecutive unanswered pings (135 s) the connection is force-closed. Pong frames reset the counter.

@@ -14,7 +14,7 @@ mod native {
 
     use crate::input::handle_key;
     use crate::network::NetworkEvent;
-    use crate::state::{apply_network_event, AppState, Screen};
+    use crate::state::{apply_network_event, AppState, BrowsingStatus, Screen};
     use crate::ui::render;
 
     pub async fn run_event_loop<B: Backend>(
@@ -35,6 +35,12 @@ mod native {
         }
 
         loop {
+            // Advance spinner frame for Loading/Creating substates
+            if let Screen::BrowsingLobbies(b) = &mut state.screen {
+                if matches!(b.status, BrowsingStatus::Loading | BrowsingStatus::Creating) {
+                    b.frame_index = b.frame_index.wrapping_add(1);
+                }
+            }
             terminal.draw(|f| render(f, &state))?;
 
             if poll(Duration::from_millis(50))? {

@@ -36,10 +36,10 @@ trunk serve   # dev server at localhost:8080, proxies /ws → ws://127.0.0.1:900
 `AppState` holds a single `Screen` variant:
 
 ```
-Connecting ──(PlayerIdentity)──▶ PreLobby ──(LobbyJoined)──▶ Lobby ──(GameStarted)──▶ Game
-                                     ▲                           │                        │
-                                     └────────(LobbyLeft/LobbyUpdated removes player)─────┘
-                                     └────────(connection closed/error from any screen)───┘
+Connecting ──(PlayerIdentity)──▶ PreLobby ──[j]──▶ BrowsingLobbies ──(LobbyJoined)──▶ Lobby ──(GameStarted)──▶ Game
+                                     ▲                    │                                │                        │
+                                     │                    └──[esc/q]────────────────────────┘                        │
+                                     └────────(LobbyLeft/LobbyUpdated removes player / connection closed/error)──────┘
 ```
 
 All transitions live in `state.rs::apply_network_event` (and its private helpers). Key points:
@@ -47,12 +47,41 @@ All transitions live in `state.rs::apply_network_event` (and its private helpers
 - `LobbyState.players` is `Vec<LobbyPlayer>` — each entry is either `Human { name }` or `Bot { name, bot_type }`. `LobbyUpdated` replaces the list wholesale; the UI renders bot names with their type in brackets.
 - `GameSnapshot` is the primary message during play; it updates hand, opponent state, active player, and hook outcome.
 - `GameResult` is stored in `GameState` but does **not** auto-navigate; the player must press Enter/Space.
-- Connection errors from `Game` navigate back to `PreLobby` (player name is preserved).
+- Connection errors from `Game` or `BrowsingLobbies` navigate back to `PreLobby` (player name is preserved).
 - Unrecognised or out-of-context server messages are silently discarded.
+
+### BrowsingLobbies sub-states
+
+`BrowsingLobbiesState.status` is a `BrowsingStatus` enum with five variants:
+
+| Variant | Meaning |
+|---------|---------|
+| `Loading` | Waiting for `LobbyList` response; spinner shown |
+| `Loaded(Vec<LobbyInfo>)` | List received; player can select and join |
+| `Creating` | Waiting for `LobbyJoined` after sending `CreateLobby`; spinner shown |
+| `EnteringId { input, error }` | Player is typing a lobby ID manually |
+| `Error(String)` | `RequestLobbies` failed |
+
+`LobbyList` arriving in `BrowsingLobbies` transitions to `Loaded` and clamps `selected_index` to the new list length. Server `Error` in `EnteringId` sets the inline error field; in all other substates it transitions to `Error`.
 
 ## Input handling
 
 `handle_key` in `input.rs` is the only place keyboard logic lives, shared between native and WASM.
+
+**PreLobby screen:**
+- `c` — sends `CreateLobby`
+- `j` — transitions to `BrowsingLobbies(Loading)` and sends `RequestLobbies`
+- `q` — quits
+
+**BrowsingLobbies screen:**
+- `c` (all substates except `Creating`) — transitions to `Creating`, sends `CreateLobby`
+- `r` (Loading/Loaded/Error) — resets to `Loading`, sends `RequestLobbies`
+- `i` (Loading/Loaded/Error) — transitions to `EnteringId`
+- Up/Down or `k`/`j` (Loaded) — navigate `selected_index`
+- `Enter` (Loaded, non-empty list) — sends `JoinLobby` for selected lobby
+- `Esc`/`q` (Loading/Loaded/Error) — returns to `PreLobby`
+- `Creating` — all keys inert while waiting for `LobbyJoined`
+- `EnteringId`: char/backspace edit input; `Enter` sends `JoinLobby`; `Esc` resets to `Loading`
 
 **Lobby screen** (leader-only actions):
 - `a` — sends `AddBot { bot_type: SimpleBot }`
@@ -100,8 +129,9 @@ Deck draw and local book completions are suppressed on the first snapshot (initi
 
 ## Testing
 
-- **`state_tests.rs`** — proptest-based tests for `apply_network_event`. Covers all `Screen::Game` message handlers (Properties 11–19), verifying state transitions and that game-only messages are discarded outside the Game screen. Includes a `lobby_player_strategy` that generates both `Human` and `Bot` variants.
-- **`network.rs` tests** — proptest round-trip tests for `ClientMessage` and `ServerMessage` JSON serialisation, plus a check that invalid frames are discarded without panicking. Includes strategies for `BotType`, `LobbyPlayer`, `AddBot`, and `RemoveBot`.
-- **`ui.rs` render tests** — unit tests for individual widgets (`CardWidget`, `TurnIndicatorWidget`, `IncompleteBookWidget`), and a proptest that `render_game` never panics across arbitrary `GameState` values.
+- **`state_tests.rs`** — proptest-based tests for `apply_network_event`. Covers all `Screen::Game` message handlers (Properties 11–19), verifying state transitions and that game-only messages are discarded outside the Game screen. Includes `BrowsingLobbies` transition tests: `LobbyList` → `Loaded`, `selected_index` clamping, `Error` routing, `LobbyJoined` from browsing, and connection-closed navigation. Includes a `lobby_player_strategy` that generates both `Human` and `Bot` variants.
+- **`input.rs` tests** — unit tests for key handling across all `BrowsingLobbies` substates: navigation (`j`/`k`, arrows), `c`/`r`/`i`/`Esc`/`q` transitions, `EnteringId` char input, and guard for empty list `Enter`.
+- **`network.rs` tests** — proptest round-trip tests for `ClientMessage` and `ServerMessage` JSON serialisation, including `RequestLobbies` and `LobbyList(Vec<LobbyInfo>)`. Includes strategies for `BotType`, `LobbyPlayer`, `LobbyInfo`, `AddBot`, and `RemoveBot`.
+- **`ui.rs` render tests** — unit tests for individual widgets (`CardWidget`, `TurnIndicatorWidget`, `IncompleteBookWidget`), and proptests that `render_game` and `render_browsing_lobbies` never panic across arbitrary state values.
 
 When adding new state transitions, add a corresponding property test in `state_tests.rs`. When adding new widgets, add unit tests in `ui.rs::widgets::tests`.

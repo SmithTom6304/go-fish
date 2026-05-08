@@ -12,7 +12,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            server_url: "wss://terminaltom.com/go-fish/game-server".to_string(),
+            server_url: "ws://127.0.0.1:9001".to_string(),
         }
     }
 }
@@ -47,7 +47,10 @@ mod native {
 
     fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> anyhow::Result<()> {
         crossterm::terminal::disable_raw_mode()?;
-        crossterm::execute!(terminal.backend_mut(), crossterm::terminal::LeaveAlternateScreen)?;
+        crossterm::execute!(
+            terminal.backend_mut(),
+            crossterm::terminal::LeaveAlternateScreen
+        )?;
         terminal.show_cursor()?;
         Ok(())
     }
@@ -60,12 +63,20 @@ mod native {
                 Ok(contents) => match toml::from_str::<Config>(&contents) {
                     Ok(cfg) => cfg,
                     Err(e) => {
-                        eprintln!("Warning: failed to parse {}: {}, using defaults", path.display(), e);
+                        eprintln!(
+                            "Warning: failed to parse {}: {}, using defaults",
+                            path.display(),
+                            e
+                        );
                         Config::default()
                     }
                 },
                 Err(e) => {
-                    eprintln!("Warning: failed to read {}: {}, using defaults", path.display(), e);
+                    eprintln!(
+                        "Warning: failed to read {}: {}, using defaults",
+                        path.display(),
+                        e
+                    );
                     Config::default()
                 }
             },
@@ -89,15 +100,17 @@ mod native {
         let (network_event_tx, network_event_rx) =
             tokio::sync::mpsc::channel::<crate::network::NetworkEvent>(32);
 
-        tokio::spawn(crate::network::run_network_task(ws, network_event_tx, client_msg_rx));
+        tokio::spawn(crate::network::run_network_task(
+            ws,
+            network_event_tx,
+            client_msg_rx,
+        ));
 
         let original_hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |panic_info| {
             let _ = crossterm::terminal::disable_raw_mode();
-            let _ = crossterm::execute!(
-                std::io::stdout(),
-                crossterm::terminal::LeaveAlternateScreen
-            );
+            let _ =
+                crossterm::execute!(std::io::stdout(), crossterm::terminal::LeaveAlternateScreen);
             original_hook(panic_info);
         }));
 
@@ -133,7 +146,7 @@ mod wasm {
 
     use crate::input::{handle_key, KeyInput};
     use crate::network::NetworkEvent;
-    use crate::state::{apply_network_event, AppState, Screen};
+    use crate::state::{apply_network_event, AppState, BrowsingStatus, Screen};
     use crate::ui::render;
 
     #[cfg(target_arch = "wasm32")]
@@ -146,7 +159,11 @@ mod wasm {
         let (client_msg_tx, client_msg_rx) = mpsc::channel::<ClientMessage>(32);
         let (network_event_tx, network_event_rx) = mpsc::channel::<NetworkEvent>(32);
 
-        spawn_local(crate::network::run_network_task(ws, network_event_tx, client_msg_rx));
+        spawn_local(crate::network::run_network_task(
+            ws,
+            network_event_tx,
+            client_msg_rx,
+        ));
 
         // Shared state between the key-event callback and the render callback.
         let state = Rc::new(RefCell::new(AppState::new()));
@@ -181,6 +198,16 @@ mod wasm {
             let mut rx = network_rx.borrow_mut();
             while let Ok(event) = rx.try_recv() {
                 apply_network_event(&mut state.borrow_mut(), &event);
+            }
+
+            // Advance spinner frame for Loading/Creating substates
+            {
+                let mut s = state.borrow_mut();
+                if let Screen::BrowsingLobbies(b) = &mut s.screen {
+                    if matches!(b.status, BrowsingStatus::Loading | BrowsingStatus::Creating) {
+                        b.frame_index = b.frame_index.wrapping_add(1);
+                    }
+                }
             }
 
             render(f, &state.borrow());

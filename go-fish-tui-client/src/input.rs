@@ -3,8 +3,8 @@ use tokio::sync::mpsc;
 use go_fish_web::ClientMessage;
 
 use crate::state::{
-    AppState, GameInputState, PreLobbyInputLobbyIdState, PreLobbyInputState, Screen,
-    is_valid_lobby_id,
+    AppState, BrowsingLobbiesState, BrowsingStatus, GameInputState,
+    PreLobbyInputState, PreLobbyState, Screen,
 };
 
 // ── Platform-agnostic key types ───────────────────────────────────────────────
@@ -91,45 +91,20 @@ pub fn handle_key(
 
     match &mut state.screen {
         Screen::PreLobby(pre) => {
-            match &mut pre.input_state {
-                PreLobbyInputState::None => {
-                    if input.key == Key::Char('c') {
-                        let _ = client_msg_tx.try_send(ClientMessage::CreateLobby);
-                    } else if input.key == Key::Char('q') {
-                        let _ = client_msg_tx.try_send(ClientMessage::LeaveLobby);
-                        return true;
-                    } else if input.key == Key::Char('j') {
-                        pre.input_state = PreLobbyInputState::LobbyId(
-                            PreLobbyInputLobbyIdState::default(),
-                        );
-                    }
-                }
-                PreLobbyInputState::LobbyId(lobby_id_state) => {
-                    let lobby_id = &mut lobby_id_state.lobby_id;
-                    match input.key {
-                        Key::Char(ch) => {
-                            lobby_id.push(ch);
-                            lobby_id_state.error = None;
-                        }
-                        Key::Backspace => {
-                            lobby_id.pop();
-                        }
-                        Key::Enter => {
-                            if is_valid_lobby_id(lobby_id) {
-                                let lobby_id = lobby_id.trim().to_string();
-                                let _ = client_msg_tx
-                                    .try_send(ClientMessage::JoinLobby(lobby_id));
-                            } else {
-                                lobby_id_state.error =
-                                    Some("Please enter a valid Lobby ID".to_string());
-                            }
-                        }
-                        Key::Esc => {
-                            pre.input_state = PreLobbyInputState::None;
-                        }
-                        _ => {}
-                    }
-                }
+            if input.key == Key::Char('c') {
+                let _ = client_msg_tx.try_send(ClientMessage::CreateLobby);
+            } else if input.key == Key::Char('q') {
+                let _ = client_msg_tx.try_send(ClientMessage::LeaveLobby);
+                return true;
+            } else if input.key == Key::Char('j') {
+                let player_name = pre.player_name.clone();
+                state.screen = Screen::BrowsingLobbies(BrowsingLobbiesState {
+                    player_name,
+                    status: BrowsingStatus::Loading,
+                    selected_index: 0,
+                    frame_index: 0,
+                });
+                let _ = client_msg_tx.try_send(ClientMessage::RequestLobbies);
             }
         }
         Screen::Lobby(lobby) => {
@@ -271,7 +246,340 @@ pub fn handle_key(
                 }
             }
         }
+        Screen::BrowsingLobbies(browsing) => {
+            let is_creating = matches!(&browsing.status, BrowsingStatus::Creating);
+            let is_entering_id = matches!(&browsing.status, BrowsingStatus::EnteringId { .. });
+
+            // Esc/q: return to PreLobby (except when in EnteringId or Creating)
+            if !is_creating && !is_entering_id
+                && matches!(&input.key, Key::Esc | Key::Char('q'))
+            {
+                let player_name = browsing.player_name.clone();
+                state.screen = Screen::PreLobby(PreLobbyState {
+                    player_name,
+                    input_state: PreLobbyInputState::None,
+                    error: None,
+                });
+                return false;
+            }
+
+            if is_creating {
+                return false;
+            }
+
+            if is_entering_id {
+                // Defer mutations that change status to avoid double-borrow
+                let mut go_loading = false;
+                let mut join_id: Option<String> = None;
+                if let BrowsingStatus::EnteringId { input: id_input, error } = &mut browsing.status {
+                    *error = None;
+                    match &input.key {
+                        Key::Char(ch) => { id_input.push(*ch); }
+                        Key::Backspace => { id_input.pop(); }
+                        Key::Enter => {
+                            let trimmed = id_input.trim().to_string();
+                            if !trimmed.is_empty() {
+                                join_id = Some(trimmed);
+                            }
+                        }
+                        Key::Esc => { go_loading = true; }
+                        _ => {}
+                    }
+                }
+                if go_loading {
+                    browsing.status = BrowsingStatus::Loading;
+                    let _ = client_msg_tx.try_send(ClientMessage::RequestLobbies);
+                }
+                if let Some(id) = join_id {
+                    let _ = client_msg_tx.try_send(ClientMessage::JoinLobby(id));
+                }
+                return false;
+            }
+
+            // Loading / Loaded / Error: cache list state before any mutations
+            let loaded_len = if let BrowsingStatus::Loaded(l) = &browsing.status { l.len() } else { 0 };
+            let enter_lobby_id = if let BrowsingStatus::Loaded(l) = &browsing.status {
+                l.get(browsing.selected_index).map(|li| li.lobby_id.clone())
+            } else {
+                None
+            };
+
+            match input.key {
+                Key::Char('c') => {
+                    browsing.status = BrowsingStatus::Creating;
+                    let _ = client_msg_tx.try_send(ClientMessage::CreateLobby);
+                }
+                Key::Char('r') => {
+                    browsing.status = BrowsingStatus::Loading;
+                    let _ = client_msg_tx.try_send(ClientMessage::RequestLobbies);
+                }
+                Key::Char('i') => {
+                    browsing.status = BrowsingStatus::EnteringId {
+                        input: String::new(),
+                        error: None,
+                    };
+                }
+                Key::Up | Key::Char('k') => {
+                    if loaded_len > 0 {
+                        browsing.selected_index =
+                            (browsing.selected_index + loaded_len - 1) % loaded_len;
+                    }
+                }
+                Key::Down | Key::Char('j') => {
+                    if loaded_len > 0 {
+                        browsing.selected_index = (browsing.selected_index + 1) % loaded_len;
+                    }
+                }
+                Key::Enter => {
+                    if let Some(id) = enter_lobby_id {
+                        let _ = client_msg_tx.try_send(ClientMessage::JoinLobby(id));
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use go_fish_web::LobbyInfo;
+    use tokio::sync::mpsc;
+
+    fn make_tx() -> mpsc::Sender<ClientMessage> {
+        mpsc::channel(8).0
+    }
+
+    fn key(k: Key) -> KeyInput {
+        KeyInput { key: k, ctrl: false }
+    }
+
+    fn browsing_state(player_name: &str, status: BrowsingStatus) -> AppState {
+        AppState {
+            screen: Screen::BrowsingLobbies(BrowsingLobbiesState {
+                player_name: player_name.to_string(),
+                status,
+                selected_index: 0,
+                frame_index: 0,
+            }),
+        }
+    }
+
+    fn pre_lobby_state(player_name: &str) -> AppState {
+        AppState {
+            screen: Screen::PreLobby(PreLobbyState {
+                player_name: player_name.to_string(),
+                input_state: PreLobbyInputState::None,
+                error: None,
+            }),
+        }
+    }
+
+    // ── PreLobby: j opens lobby browser ──────────────────────────────────────
+
+    #[test]
+    fn pre_lobby_j_transitions_to_browsing_lobbies() {
+        let tx = make_tx();
+        let mut state = pre_lobby_state("Alice");
+        handle_key(&mut state, key(Key::Char('j')), &tx);
+        assert!(matches!(state.screen, Screen::BrowsingLobbies(_)));
+    }
+
+    #[test]
+    fn pre_lobby_j_sets_status_to_loading() {
+        let tx = make_tx();
+        let mut state = pre_lobby_state("Alice");
+        handle_key(&mut state, key(Key::Char('j')), &tx);
+        if let Screen::BrowsingLobbies(b) = &state.screen {
+            assert!(matches!(b.status, BrowsingStatus::Loading));
+        } else {
+            panic!("expected BrowsingLobbies");
+        }
+    }
+
+    // ── BrowsingLobbies: Esc/q returns to PreLobby ───────────────────────────
+
+    #[test]
+    fn browsing_esc_returns_to_pre_lobby() {
+        let tx = make_tx();
+        let mut state = browsing_state("Alice", BrowsingStatus::Loading);
+        handle_key(&mut state, key(Key::Esc), &tx);
+        assert!(matches!(state.screen, Screen::PreLobby(_)));
+    }
+
+    #[test]
+    fn browsing_q_returns_to_pre_lobby() {
+        let tx = make_tx();
+        let mut state = browsing_state("Alice", BrowsingStatus::Loaded(vec![]));
+        handle_key(&mut state, key(Key::Char('q')), &tx);
+        assert!(matches!(state.screen, Screen::PreLobby(_)));
+    }
+
+    // ── BrowsingLobbies: c transitions to Creating ───────────────────────────
+
+    #[test]
+    fn browsing_c_transitions_to_creating_from_loading() {
+        let tx = make_tx();
+        let mut state = browsing_state("Alice", BrowsingStatus::Loading);
+        handle_key(&mut state, key(Key::Char('c')), &tx);
+        if let Screen::BrowsingLobbies(b) = &state.screen {
+            assert!(matches!(b.status, BrowsingStatus::Creating));
+        } else {
+            panic!("expected BrowsingLobbies");
+        }
+    }
+
+    #[test]
+    fn browsing_creating_all_keys_inert() {
+        let tx = make_tx();
+        let mut state = browsing_state("Alice", BrowsingStatus::Creating);
+        handle_key(&mut state, key(Key::Char('q')), &tx);
+        // Should NOT have navigated away — Creating ignores Esc/q
+        assert!(matches!(state.screen, Screen::BrowsingLobbies(_)));
+        if let Screen::BrowsingLobbies(b) = &state.screen {
+            assert!(matches!(b.status, BrowsingStatus::Creating));
+        }
+    }
+
+    // ── BrowsingLobbies: r reloads ────────────────────────────────────────────
+
+    #[test]
+    fn browsing_r_resets_to_loading() {
+        let tx = make_tx();
+        let mut state = browsing_state("Alice", BrowsingStatus::Loaded(vec![]));
+        handle_key(&mut state, key(Key::Char('r')), &tx);
+        if let Screen::BrowsingLobbies(b) = &state.screen {
+            assert!(matches!(b.status, BrowsingStatus::Loading));
+        } else {
+            panic!("expected BrowsingLobbies");
+        }
+    }
+
+    // ── BrowsingLobbies: i enters id mode ────────────────────────────────────
+
+    #[test]
+    fn browsing_i_transitions_to_entering_id() {
+        let tx = make_tx();
+        let mut state = browsing_state("Alice", BrowsingStatus::Loading);
+        handle_key(&mut state, key(Key::Char('i')), &tx);
+        if let Screen::BrowsingLobbies(b) = &state.screen {
+            assert!(matches!(&b.status, BrowsingStatus::EnteringId { input, error } if input.is_empty() && error.is_none()));
+        } else {
+            panic!("expected BrowsingLobbies");
+        }
+    }
+
+    // ── BrowsingLobbies: up/down navigation ──────────────────────────────────
+
+    #[test]
+    fn browsing_down_increments_selected_index_in_loaded() {
+        let tx = make_tx();
+        let lobbies = vec![
+            LobbyInfo { lobby_id: "a".to_string(), player_count: 1, max_players: 4 },
+            LobbyInfo { lobby_id: "b".to_string(), player_count: 1, max_players: 4 },
+        ];
+        let mut state = browsing_state("Alice", BrowsingStatus::Loaded(lobbies));
+        handle_key(&mut state, key(Key::Down), &tx);
+        if let Screen::BrowsingLobbies(b) = &state.screen {
+            assert_eq!(b.selected_index, 1);
+        } else {
+            panic!("expected BrowsingLobbies");
+        }
+    }
+
+    #[test]
+    fn browsing_down_wraps_to_first_from_last() {
+        let tx = make_tx();
+        let lobbies = vec![
+            LobbyInfo { lobby_id: "a".to_string(), player_count: 1, max_players: 4 },
+            LobbyInfo { lobby_id: "b".to_string(), player_count: 1, max_players: 4 },
+        ];
+        let mut state = browsing_state("Alice", BrowsingStatus::Loaded(lobbies));
+        if let Screen::BrowsingLobbies(b) = &mut state.screen {
+            b.selected_index = 1;
+        }
+        handle_key(&mut state, key(Key::Down), &tx);
+        if let Screen::BrowsingLobbies(b) = &state.screen {
+            assert_eq!(b.selected_index, 0, "should wrap to first item");
+        } else {
+            panic!("expected BrowsingLobbies");
+        }
+    }
+
+    #[test]
+    fn browsing_up_decrements_selected_index() {
+        let tx = make_tx();
+        let lobbies = vec![
+            LobbyInfo { lobby_id: "a".to_string(), player_count: 1, max_players: 4 },
+            LobbyInfo { lobby_id: "b".to_string(), player_count: 1, max_players: 4 },
+        ];
+        let mut state = browsing_state("Alice", BrowsingStatus::Loaded(lobbies));
+        if let Screen::BrowsingLobbies(b) = &mut state.screen {
+            b.selected_index = 1;
+        }
+        handle_key(&mut state, key(Key::Up), &tx);
+        if let Screen::BrowsingLobbies(b) = &state.screen {
+            assert_eq!(b.selected_index, 0);
+        } else {
+            panic!("expected BrowsingLobbies");
+        }
+    }
+
+    #[test]
+    fn browsing_up_wraps_to_last_from_first() {
+        let tx = make_tx();
+        let lobbies = vec![
+            LobbyInfo { lobby_id: "a".to_string(), player_count: 1, max_players: 4 },
+            LobbyInfo { lobby_id: "b".to_string(), player_count: 1, max_players: 4 },
+            LobbyInfo { lobby_id: "c".to_string(), player_count: 1, max_players: 4 },
+        ];
+        let mut state = browsing_state("Alice", BrowsingStatus::Loaded(lobbies));
+        handle_key(&mut state, key(Key::Up), &tx);
+        if let Screen::BrowsingLobbies(b) = &state.screen {
+            assert_eq!(b.selected_index, 2, "should wrap to last item");
+        } else {
+            panic!("expected BrowsingLobbies");
+        }
+    }
+
+    // ── EnteringId: char input, backspace, esc ────────────────────────────────
+
+    #[test]
+    fn entering_id_char_appends_to_input() {
+        let tx = make_tx();
+        let mut state = browsing_state("Alice", BrowsingStatus::EnteringId { input: String::new(), error: None });
+        handle_key(&mut state, key(Key::Char('x')), &tx);
+        if let Screen::BrowsingLobbies(BrowsingLobbiesState { status: BrowsingStatus::EnteringId { input, .. }, .. }) = &state.screen {
+            assert_eq!(input, "x");
+        } else {
+            panic!("unexpected state");
+        }
+    }
+
+    #[test]
+    fn entering_id_backspace_pops_char() {
+        let tx = make_tx();
+        let mut state = browsing_state("Alice", BrowsingStatus::EnteringId { input: "ab".to_string(), error: None });
+        handle_key(&mut state, key(Key::Backspace), &tx);
+        if let Screen::BrowsingLobbies(BrowsingLobbiesState { status: BrowsingStatus::EnteringId { input, .. }, .. }) = &state.screen {
+            assert_eq!(input, "a");
+        } else {
+            panic!("unexpected state");
+        }
+    }
+
+    #[test]
+    fn entering_id_esc_resets_to_loading() {
+        let tx = make_tx();
+        let mut state = browsing_state("Alice", BrowsingStatus::EnteringId { input: "some-id".to_string(), error: None });
+        handle_key(&mut state, key(Key::Esc), &tx);
+        if let Screen::BrowsingLobbies(b) = &state.screen {
+            assert!(matches!(b.status, BrowsingStatus::Loading));
+        } else {
+            panic!("expected BrowsingLobbies");
+        }
+    }
 }

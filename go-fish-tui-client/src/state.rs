@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::collections::VecDeque;
 
 use go_fish::HookResult;
+use go_fish_web::LobbyInfo;
 use go_fish_web::LobbyLeftReason;
 use go_fish_web::LobbyPlayer;
 use go_fish_web::ServerMessage;
@@ -27,13 +28,6 @@ pub struct PreLobbyState {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum PreLobbyInputState {
     #[default] None,
-    LobbyId(PreLobbyInputLobbyIdState)
-}
-
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct PreLobbyInputLobbyIdState {
-    pub lobby_id: String,
-    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -96,12 +90,30 @@ impl GameState {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum BrowsingStatus {
+    Loading,
+    Loaded(Vec<LobbyInfo>),
+    Creating,
+    EnteringId { input: String, error: Option<String> },
+    Error(String),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BrowsingLobbiesState {
+    pub player_name: String,
+    pub status: BrowsingStatus,
+    pub selected_index: usize,
+    pub frame_index: usize,
+}
+
 // ── Task 5.2: Screen::Game variant ───────────────────────────────────────────
 
 #[derive(Debug, Clone)]
 pub enum Screen {
     Connecting(ConnectingState),
     PreLobby(PreLobbyState),
+    BrowsingLobbies(BrowsingLobbiesState),
     Lobby(LobbyState),
     Game(GameState),
 }
@@ -147,8 +159,12 @@ fn apply_server_message(state: &mut AppState, msg: &ServerMessage) {
             players,
             max_players,
         } => {
-            if let Screen::PreLobby(pre) = &state.screen {
-                let player_name = pre.player_name.clone();
+            let player_name = match &state.screen {
+                Screen::PreLobby(s) => Some(s.player_name.clone()),
+                Screen::BrowsingLobbies(s) => Some(s.player_name.clone()),
+                _ => None,
+            };
+            if let Some(player_name) = player_name {
                 state.screen = Screen::Lobby(LobbyState {
                     player_name,
                     lobby_id: lobby_id.clone(),
@@ -267,13 +283,16 @@ fn apply_server_message(state: &mut AppState, msg: &ServerMessage) {
                     s.status = msg.clone();
                 }
                 Screen::PreLobby(s) => {
-                    match &mut s.input_state {
-                        PreLobbyInputState::None => {
-                            s.error = Some(msg.clone());
+                    s.error = Some(msg.clone());
+                }
+                Screen::BrowsingLobbies(s) => {
+                    match &mut s.status {
+                        BrowsingStatus::EnteringId { input, error } => {
+                            input.clear();
+                            *error = Some(msg.clone());
                         }
-                        PreLobbyInputState::LobbyId(state) => {
-                            state.error = Some(msg.clone());
-                            state.lobby_id = "".to_string();
+                        _ => {
+                            s.status = BrowsingStatus::Error(msg.clone());
                         }
                     }
                 }
@@ -281,12 +300,17 @@ fn apply_server_message(state: &mut AppState, msg: &ServerMessage) {
                     s.error = Some(msg.clone());
                 }
                 // Task 5.6: Game arm for Error — display on status bar, do not navigate
-                Screen::Game(_s) => {
-                    // Generic server errors on the Game screen are displayed via the UI layer.
-                    // No navigation occurs. The error string is not stored in hook_error
-                    // (which is typed as Option<go_fish_web::HookError>), so we silently
-                    // acknowledge it here. The UI can be extended to show a separate error field.
-                }
+                Screen::Game(_s) => {}
+            }
+        }
+        ServerMessage::LobbyList(lobbies) => {
+            if let Screen::BrowsingLobbies(s) = &mut state.screen {
+                s.selected_index = if lobbies.is_empty() {
+                    0
+                } else {
+                    s.selected_index.min(lobbies.len() - 1)
+                };
+                s.status = BrowsingStatus::Loaded(lobbies.clone());
             }
         }
         // Other server messages (HandState, PlayerTurn, HookAndResult) are silently discarded
@@ -297,7 +321,6 @@ fn apply_server_message(state: &mut AppState, msg: &ServerMessage) {
 // Task 5.6: apply_connection_closed with Game arm
 fn apply_connection_closed(state: &mut AppState) {
     let msg = "Server closed connection.".to_string();
-    // Extract player_name from Game screen before mutating
     if let Screen::Game(game) = &state.screen {
         let player_name = game.player_name.clone();
         state.screen = Screen::PreLobby(PreLobbyState {
@@ -307,18 +330,26 @@ fn apply_connection_closed(state: &mut AppState) {
         });
         return;
     }
+    if let Screen::BrowsingLobbies(b) = &state.screen {
+        let player_name = b.player_name.clone();
+        state.screen = Screen::PreLobby(PreLobbyState {
+            player_name,
+            input_state: PreLobbyInputState::None,
+            error: Some(msg),
+        });
+        return;
+    }
     match &mut state.screen {
         Screen::Connecting(s) => s.status = msg,
         Screen::PreLobby(s) => s.error = Some(msg),
         Screen::Lobby(s) => s.error = Some(msg),
-        Screen::Game(_) => unreachable!(),
+        Screen::Game(_) | Screen::BrowsingLobbies(_) => unreachable!(),
     }
 }
 
 // Task 5.6: apply_connection_error with Game arm
 fn apply_connection_error(state: &mut AppState, err: &str) {
     let msg = format!("Connection error: {}", err);
-    // Extract player_name from Game screen before mutating
     if let Screen::Game(game) = &state.screen {
         let player_name = game.player_name.clone();
         state.screen = Screen::PreLobby(PreLobbyState {
@@ -328,11 +359,20 @@ fn apply_connection_error(state: &mut AppState, err: &str) {
         });
         return;
     }
+    if let Screen::BrowsingLobbies(b) = &state.screen {
+        let player_name = b.player_name.clone();
+        state.screen = Screen::PreLobby(PreLobbyState {
+            player_name,
+            input_state: PreLobbyInputState::None,
+            error: Some(msg),
+        });
+        return;
+    }
     match &mut state.screen {
         Screen::Connecting(s) => s.status = msg,
         Screen::PreLobby(s) => s.error = Some(msg),
         Screen::Lobby(s) => s.error = Some(msg),
-        Screen::Game(_) => unreachable!(),
+        Screen::Game(_) | Screen::BrowsingLobbies(_) => unreachable!(),
     }
 }
 
@@ -463,10 +503,6 @@ fn format_hook_outcome(outcome: &go_fish_web::HookOutcome, player_name: &str) ->
     }
 }
 
-/// Returns true if the lobby ID is non-empty after trimming whitespace.
-pub fn is_valid_lobby_id(s: &str) -> bool {
-    !s.trim().is_empty()
-}
 
 #[cfg(test)]
 #[path = "state_tests.rs"]

@@ -95,6 +95,7 @@ Pure type-definition crate. Single file `src/lib.rs`. No logic, no tests. All ty
 | `Hook(ClientHookRequest)` | Execute a turn (`target_name` + `rank`) |
 | `AddBot { bot_type }` | Leader adds a bot slot to the lobby |
 | `RemoveBot` | Leader removes the last bot slot from the lobby |
+| `RequestLobbies` | Request list of joinable lobbies (only valid in `PreLobby` phase) |
 
 **`ServerMessage` variants** (server → client):
 
@@ -109,6 +110,7 @@ Pure type-definition crate. Single file `src/lib.rs`. No logic, no tests. All ty
 | `HookError(HookError)` | Turn rejected |
 | `GameResult(GameResult)` | Game over |
 | `Error(String)` | Generic server error |
+| `LobbyList(Vec<LobbyInfo>)` | Response to `RequestLobbies`; joinable lobbies only |
 
 Serialisation round-trip tests live in `go-fish-tui-client/src/network.rs`. When adding new variants, add corresponding proptest strategies and assertions there.
 
@@ -179,10 +181,10 @@ Module overview:
 `AppState` / `Screen` state machine:
 
 ```
-Connecting ──(PlayerIdentity)──▶ PreLobby ──(LobbyJoined)──▶ Lobby ──(GameStarted)──▶ Game
-                                     ▲                           │                        │
-                                     └────────(LobbyLeft/LobbyUpdated removes player)─────┘
-                                     └────────(connection closed/error from any screen)───┘
+Connecting ──(PlayerIdentity)──▶ PreLobby ──[j]──▶ BrowsingLobbies ──(LobbyJoined)──▶ Lobby ──(GameStarted)──▶ Game
+                                     ▲                   │  │                              │                        │
+                                     │              [esc/q]  └──[c]──▶ (Creating)──────────┘                        │
+                                     └──────────────────┴──────(LobbyLeft/connection closed/error)──────────────────┘
 ```
 
 `GameInputState` sub-machine:

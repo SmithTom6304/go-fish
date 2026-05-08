@@ -4,8 +4,7 @@ const CARD_HEIGHT: u16 = 5;
 pub use render::render;
 
 mod render {
-    use crate::state::PreLobbyInputState;
-    use crate::state::{AppState, ConnectingState, LobbyState, PreLobbyState, Screen};
+    use crate::state::{AppState, BrowsingLobbiesState, BrowsingStatus, ConnectingState, LobbyState, PreLobbyState, Screen};
     use crate::state::{GameInputState, GameState, MAX_NOTIFICATION_HISTORY};
     use ratatui::layout::{Flex, Rect};
     use ratatui::style::Modifier;
@@ -23,6 +22,7 @@ mod render {
         match &app.screen {
             Screen::Connecting(s) => render_connecting(f, s),
             Screen::PreLobby(s) => render_pre_lobby(f, s),
+            Screen::BrowsingLobbies(s) => render_browsing_lobbies(f, s),
             Screen::Lobby(s) => render_lobby(f, s),
             Screen::Game(s) => render_game(f, s),
         }
@@ -91,36 +91,109 @@ mod render {
 
     fn render_pre_lobby(f: &mut Frame, state: &PreLobbyState) {
         let area = f.area();
+        render_background(f, area, &state.player_name, state.error.as_deref(),
+            "[c] Create lobby  [j] Browse lobbies  [q] Quit");
+    }
 
-        let hints = match &state.input_state {
-            PreLobbyInputState::None => "[c] Create lobby  [j] Join lobby  [q] Quit",
-            PreLobbyInputState::LobbyId(_) => "[enter] Join lobby  [esc] Close",
+    const BRAILLE_SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+    fn render_browsing_lobbies(f: &mut Frame, state: &BrowsingLobbiesState) {
+        let area = f.area();
+        let spinner = BRAILLE_SPINNER[state.frame_index % 10];
+
+        let hints = match &state.status {
+            BrowsingStatus::Creating => "",
+            _ => "[c] Create  [i] Enter ID  [r] Refresh  [esc] Back",
         };
+        render_background(f, area, &state.player_name, None, hints);
 
-        render_background(f, area, &state.player_name, state.error.as_deref(), hints);
+        let centered = area.centered(Constraint::Percentage(60), Constraint::Length(20));
+        f.render_widget(Clear, centered);
 
-        // Optional input overlay
-        if let PreLobbyInputState::LobbyId(lobby_id_state) = &state.input_state {
-            let lobby_id = &lobby_id_state.lobby_id;
-            let error = &lobby_id_state.error;
-            let centered_area = area.centered(Constraint::Percentage(60), Constraint::Length(3));
-            f.render_widget(Clear, centered_area);
-            let text = match error {
-                Some(err) => err.as_str(),
-                None => match lobby_id.len() {
-                    0 => "Enter a lobby ID",
-                    _ => lobby_id,
-                },
-            };
-            let border_style = if error.is_some() {
-                Style::default().fg(Color::Red)
-            } else {
-                Style::default()
-            };
-            let lobby_id_para = Paragraph::new(text)
-                .centered()
-                .block(Block::default().borders(Borders::ALL).style(border_style));
-            f.render_widget(lobby_id_para, centered_area);
+        let list_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(3)])
+            .split(centered);
+
+        match &state.status {
+            BrowsingStatus::Loading => {
+                let top_pad = list_chunks[0].height.saturating_sub(2).saturating_sub(1) / 2;
+                let para = Paragraph::new(format!("{} Loading lobbies…", spinner))
+                    .alignment(Alignment::Center)
+                    .block(Block::default().borders(Borders::ALL).title("Lobbies")
+                        .padding(Padding::new(0, 0, top_pad, 0)));
+                f.render_widget(para, list_chunks[0]);
+            }
+            BrowsingStatus::Creating => {
+                let top_pad = list_chunks[0].height.saturating_sub(2).saturating_sub(1) / 2;
+                let para = Paragraph::new(format!("{} Creating lobby…", spinner))
+                    .alignment(Alignment::Center)
+                    .block(Block::default().borders(Borders::ALL).title("Lobbies")
+                        .padding(Padding::new(0, 0, top_pad, 0)));
+                f.render_widget(para, list_chunks[0]);
+            }
+            BrowsingStatus::Loaded(lobbies) => {
+                // Lobby list
+                let list_lines: Vec<Line> = if lobbies.is_empty() {
+                    vec![Line::from(Span::styled(
+                        "No lobbies available — press [c] to create one",
+                        Style::default().fg(Color::DarkGray),
+                    ))]
+                } else {
+                    lobbies.iter().enumerate().map(|(i, lobby)| {
+                        let text = format!("  {}  ({}/{})", lobby.lobby_id, lobby.player_count, lobby.max_players);
+                        if i == state.selected_index {
+                            Line::from(Span::styled(text, Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)))
+                        } else {
+                            Line::from(text)
+                        }
+                    }).collect()
+                };
+                let list_para = if lobbies.is_empty() {
+                    let inner_height = list_chunks[0].height.saturating_sub(2);
+                    let top_pad = inner_height.saturating_sub(1) / 2;
+                    Paragraph::new(list_lines)
+                        .alignment(Alignment::Center)
+                        .block(Block::default().borders(Borders::ALL).title("Lobbies")
+                            .padding(Padding::new(0, 0, top_pad, 0)))
+                } else {
+                    Paragraph::new(list_lines)
+                        .block(Block::default().borders(Borders::ALL).title("Lobbies"))
+                };
+                f.render_widget(list_para, list_chunks[0]);
+
+                // Join hint
+                let join_hint = if !lobbies.is_empty() { "[enter] Join selected" } else { "" };
+                let hint_para = Paragraph::new(join_hint).alignment(Alignment::Center);
+                f.render_widget(hint_para, list_chunks[1]);
+            }
+            BrowsingStatus::EnteringId { input: id_input, error } => {
+                // Empty lobbies box as backdrop
+                let list_para = Paragraph::new("").block(Block::default().borders(Borders::ALL).title("Lobbies"));
+                f.render_widget(list_para, list_chunks[0]);
+
+                // Input dialog centered over the lobbies box
+                let overlay = list_chunks[0].centered(Constraint::Percentage(70), Constraint::Length(3));
+                f.render_widget(Clear, overlay);
+
+                let (display, content_style, border_style) = if let Some(err) = error {
+                    (err.as_str(), Style::default().fg(Color::Red), Style::default().fg(Color::Red))
+                } else if id_input.is_empty() {
+                    ("Enter lobby ID…", Style::default().fg(Color::DarkGray), Style::default())
+                } else {
+                    (id_input.as_str(), Style::default(), Style::default())
+                };
+                let input_para = Paragraph::new(Span::styled(display, content_style))
+                    .centered()
+                    .block(Block::default().borders(Borders::ALL).title("Lobby ID").style(border_style));
+                f.render_widget(input_para, overlay);
+            }
+            BrowsingStatus::Error(msg) => {
+                let para = Paragraph::new(format!("Error: {}\n\n[r] Retry  [i] Enter ID manually", msg))
+                    .alignment(Alignment::Center)
+                    .block(Block::default().borders(Borders::ALL).title("Lobbies"));
+                f.render_widget(para, centered);
+            }
         }
     }
 
@@ -283,7 +356,7 @@ mod render {
     #[cfg(test)]
     mod tests {
         use super::*;
-        use crate::state::{AppState, Screen};
+        use crate::state::{AppState, BrowsingLobbiesState, BrowsingStatus, Screen};
         use go_fish::{Card, CompleteBook, Hand, IncompleteBook, Rank, Suit};
         use go_fish_web::GameResult;
         use proptest::prelude::*;
@@ -392,6 +465,76 @@ mod render {
                 let app = AppState { screen: Screen::Game(state) };
                 terminal.draw(|f| render(f, &app)).unwrap();
             }
+        }
+
+        fn browsing_status_strategy() -> impl Strategy<Value = BrowsingStatus> {
+            use go_fish_web::LobbyInfo;
+            let lobby_info_strat = ("[a-zA-Z0-9]{1,16}", 1usize..=3usize, 2usize..=6usize)
+                .prop_map(|(id, pc, mp)| LobbyInfo { lobby_id: id, player_count: pc.min(mp), max_players: mp });
+            prop_oneof![
+                Just(BrowsingStatus::Loading),
+                Just(BrowsingStatus::Creating),
+                prop::collection::vec(lobby_info_strat, 0..=4).prop_map(BrowsingStatus::Loaded),
+                ("[a-zA-Z0-9 ]{0,32}", prop::option::of("[a-zA-Z0-9 ]{0,32}"))
+                    .prop_map(|(input, error)| BrowsingStatus::EnteringId { input, error }),
+                "[a-zA-Z0-9 ]{0,32}".prop_map(BrowsingStatus::Error),
+            ]
+        }
+
+        fn browsing_lobbies_state_strategy() -> impl Strategy<Value = BrowsingLobbiesState> {
+            ("[a-zA-Z0-9]{1,16}", browsing_status_strategy(), 0usize..=10usize, 0usize..=9usize)
+                .prop_map(|(player_name, status, selected_index, frame_index)| BrowsingLobbiesState {
+                    player_name,
+                    status,
+                    selected_index,
+                    frame_index,
+                })
+        }
+
+        proptest! {
+            #[test]
+            fn render_browsing_lobbies_does_not_panic(state in browsing_lobbies_state_strategy()) {
+                let backend = TestBackend::new(120, 40);
+                let mut terminal = Terminal::new(backend).unwrap();
+                let app = AppState { screen: Screen::BrowsingLobbies(state) };
+                terminal.draw(|f| render(f, &app)).unwrap();
+            }
+        }
+
+        #[test]
+        fn render_browsing_lobbies_loading_shows_spinner() {
+            let backend = TestBackend::new(80, 24);
+            let mut terminal = Terminal::new(backend).unwrap();
+            let state = BrowsingLobbiesState {
+                player_name: "Alice".to_string(),
+                status: BrowsingStatus::Loading,
+                selected_index: 0,
+                frame_index: 0,
+            };
+            let app = AppState { screen: Screen::BrowsingLobbies(state) };
+            terminal.draw(|f| render(f, &app)).unwrap();
+            let content = terminal.backend().buffer().area;
+            assert!(content.width > 0, "terminal has content area");
+        }
+
+        #[test]
+        fn render_browsing_lobbies_loaded_shows_lobby_name() {
+            use go_fish_web::LobbyInfo;
+            let backend = TestBackend::new(120, 40);
+            let mut terminal = Terminal::new(backend).unwrap();
+            let state = BrowsingLobbiesState {
+                player_name: "Alice".to_string(),
+                status: BrowsingStatus::Loaded(vec![
+                    LobbyInfo { lobby_id: "azure-reef".to_string(), player_count: 1, max_players: 4 },
+                ]),
+                selected_index: 0,
+                frame_index: 0,
+            };
+            let app = AppState { screen: Screen::BrowsingLobbies(state) };
+            terminal.draw(|f| render(f, &app)).unwrap();
+            let buf = terminal.backend().buffer().clone();
+            let rendered: String = buf.content().iter().map(|c| c.symbol()).collect();
+            assert!(rendered.contains("azure-reef"), "rendered output should contain lobby name");
         }
     }
 }

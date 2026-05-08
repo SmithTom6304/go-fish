@@ -43,6 +43,7 @@ This is a pure type-definition crate. No application logic lives here. Consumers
 | `Hook(ClientHookRequest)` | target name + rank | Execute a turn |
 | `AddBot { bot_type }` | `BotType` | Leader adds a bot slot to the lobby |
 | `RemoveBot` | — | Leader removes the last bot slot from the lobby |
+| `RequestLobbies` | — | Request list of joinable lobbies (only valid in `PreLobby` phase) |
 
 **`ServerMessage` variants**
 
@@ -60,11 +61,13 @@ This is a pure type-definition crate. No application logic lives here. Consumers
 | `PlayerTurn(PlayerTurnValue)` | `YourTurn` or `OtherTurn(name)` | Indicates active player |
 | `GameResult(GameResult)` | winners + losers | Game over |
 | `Error(String)` | message | Generic server error |
+| `LobbyList(Vec<LobbyInfo>)` | list of joinable lobbies | Response to `RequestLobbies` |
 
 ### Supporting types
 
 | Type | Description |
 |------|-------------|
+| `LobbyInfo` | `{ lobby_id: String, player_count: usize, max_players: usize }` — a joinable lobby returned by `LobbyList`. `lobby_id` is a human-readable `random_water_name()` string (e.g. `"azure-reef"`). Only `Waiting` lobbies with at least one open slot are included. |
 | `BotType` | `SimpleBot` — identifies which bot implementation to add |
 | `LobbyPlayer` | `Human { name }` or `Bot { name, bot_type }` — a slot in the lobby player list |
 | `ClientHookRequest` | `{ target_name: String, rank: Rank }` — client turn payload |

@@ -9,9 +9,10 @@ fn line_text(line: &Line<'_>) -> String {
     line.spans.iter().map(|s| s.content.as_ref()).collect()
 }
 use go_fish_web::{
-    BotType, GameResult, GameSnapshot, HandState, HookError, HookOutcome, LobbyPlayer,
+    BotType, GameResult, GameSnapshot, HandState, HookError, HookOutcome, LobbyInfo, LobbyPlayer,
     OpponentState, ServerMessage,
 };
+use crate::state::{BrowsingLobbiesState, BrowsingStatus};
 use proptest::prelude::*;
 
 fn rank_strategy() -> impl Strategy<Value = Rank> {
@@ -760,6 +761,171 @@ proptest! {
             );
             let after2 = format!("{:?}", state.screen);
             prop_assert_eq!(after, after2, "Lobby screen changed after HookError");
+        }
+    }
+}
+
+// ── BrowsingLobbies state tests ───────────────────────────────────────────────
+
+fn browsing_lobbies_state(player_name: &str) -> BrowsingLobbiesState {
+    BrowsingLobbiesState {
+        player_name: player_name.to_string(),
+        status: BrowsingStatus::Loading,
+        selected_index: 0,
+        frame_index: 0,
+    }
+}
+
+fn lobby_info_strategy() -> impl Strategy<Value = LobbyInfo> {
+    ("[a-zA-Z0-9]{1,16}", 1usize..=4usize, 2usize..=8usize)
+        .prop_map(|(lobby_id, player_count, max_players)| LobbyInfo {
+            lobby_id,
+            player_count: player_count.min(max_players),
+            max_players,
+        })
+}
+
+#[test]
+fn lobby_list_transitions_loading_to_loaded() {
+    let mut state = AppState {
+        screen: Screen::BrowsingLobbies(browsing_lobbies_state("Alice")),
+    };
+    let lobbies = vec![
+        LobbyInfo { lobby_id: "azure-reef".to_string(), player_count: 1, max_players: 4 },
+    ];
+    apply_network_event(&mut state, &NetworkEvent::Message(ServerMessage::LobbyList(lobbies.clone())));
+    match &state.screen {
+        Screen::BrowsingLobbies(s) => {
+            assert!(matches!(&s.status, BrowsingStatus::Loaded(l) if l == &lobbies));
+        }
+        other => panic!("expected BrowsingLobbies, got {:?}", other),
+    }
+}
+
+#[test]
+fn lobby_list_clamps_selected_index() {
+    let mut browsing = browsing_lobbies_state("Alice");
+    browsing.selected_index = 5;
+    let mut state = AppState { screen: Screen::BrowsingLobbies(browsing) };
+
+    let lobbies = vec![
+        LobbyInfo { lobby_id: "a".to_string(), player_count: 1, max_players: 4 },
+        LobbyInfo { lobby_id: "b".to_string(), player_count: 1, max_players: 4 },
+    ];
+    apply_network_event(&mut state, &NetworkEvent::Message(ServerMessage::LobbyList(lobbies)));
+    match &state.screen {
+        Screen::BrowsingLobbies(s) => assert_eq!(s.selected_index, 1),
+        other => panic!("expected BrowsingLobbies, got {:?}", other),
+    }
+}
+
+#[test]
+fn lobby_list_empty_resets_selected_index_to_zero() {
+    let mut browsing = browsing_lobbies_state("Alice");
+    browsing.selected_index = 3;
+    let mut state = AppState { screen: Screen::BrowsingLobbies(browsing) };
+    apply_network_event(&mut state, &NetworkEvent::Message(ServerMessage::LobbyList(vec![])));
+    match &state.screen {
+        Screen::BrowsingLobbies(s) => assert_eq!(s.selected_index, 0),
+        other => panic!("expected BrowsingLobbies, got {:?}", other),
+    }
+}
+
+#[test]
+fn error_in_browsing_transitions_to_error_status() {
+    let mut state = AppState {
+        screen: Screen::BrowsingLobbies(browsing_lobbies_state("Alice")),
+    };
+    apply_network_event(
+        &mut state,
+        &NetworkEvent::Message(ServerMessage::Error("something went wrong".to_string())),
+    );
+    match &state.screen {
+        Screen::BrowsingLobbies(s) => {
+            assert!(matches!(&s.status, BrowsingStatus::Error(e) if e == "something went wrong"));
+        }
+        other => panic!("expected BrowsingLobbies, got {:?}", other),
+    }
+}
+
+#[test]
+fn error_in_entering_id_sets_inline_error() {
+    let mut browsing = browsing_lobbies_state("Alice");
+    browsing.status = BrowsingStatus::EnteringId { input: "my-lobby".to_string(), error: None };
+    let mut state = AppState { screen: Screen::BrowsingLobbies(browsing) };
+    apply_network_event(
+        &mut state,
+        &NetworkEvent::Message(ServerMessage::Error("lobby not found".to_string())),
+    );
+    match &state.screen {
+        Screen::BrowsingLobbies(s) => {
+            assert!(matches!(&s.status, BrowsingStatus::EnteringId { error: Some(e), .. } if e == "lobby not found"));
+        }
+        other => panic!("expected BrowsingLobbies, got {:?}", other),
+    }
+}
+
+#[test]
+fn lobby_joined_from_browsing_transitions_to_lobby() {
+    let mut state = AppState {
+        screen: Screen::BrowsingLobbies(browsing_lobbies_state("Alice")),
+    };
+    apply_network_event(
+        &mut state,
+        &NetworkEvent::Message(ServerMessage::LobbyJoined {
+            lobby_id: "azure-reef".to_string(),
+            leader: "Alice".to_string(),
+            players: vec![LobbyPlayer::Human { name: "Alice".to_string() }],
+            max_players: 4,
+        }),
+    );
+    match &state.screen {
+        Screen::Lobby(s) => {
+            assert_eq!(s.player_name, "Alice");
+            assert_eq!(s.lobby_id, "azure-reef");
+        }
+        other => panic!("expected Lobby, got {:?}", other),
+    }
+}
+
+#[test]
+fn connection_closed_from_browsing_goes_to_pre_lobby_with_error() {
+    let mut state = AppState {
+        screen: Screen::BrowsingLobbies(browsing_lobbies_state("Alice")),
+    };
+    apply_network_event(&mut state, &NetworkEvent::Closed);
+    match &state.screen {
+        Screen::PreLobby(s) => {
+            assert_eq!(s.player_name, "Alice");
+            assert!(s.error.is_some());
+        }
+        other => panic!("expected PreLobby, got {:?}", other),
+    }
+}
+
+proptest! {
+    #[test]
+    fn prop_lobby_list_updates_browsing_status(
+        lobbies in prop::collection::vec(lobby_info_strategy(), 0..=5),
+        initial_index in 0usize..=10usize,
+    ) {
+        let mut browsing = browsing_lobbies_state("Alice");
+        browsing.selected_index = initial_index;
+        let mut state = AppState { screen: Screen::BrowsingLobbies(browsing) };
+        apply_network_event(
+            &mut state,
+            &NetworkEvent::Message(ServerMessage::LobbyList(lobbies.clone())),
+        );
+        match &state.screen {
+            Screen::BrowsingLobbies(s) => {
+                prop_assert!(matches!(&s.status, BrowsingStatus::Loaded(l) if l == &lobbies));
+                if lobbies.is_empty() {
+                    prop_assert_eq!(s.selected_index, 0);
+                } else {
+                    prop_assert!(s.selected_index < lobbies.len());
+                }
+            }
+            other => prop_assert!(false, "expected BrowsingLobbies, got {:?}", other),
         }
     }
 }
