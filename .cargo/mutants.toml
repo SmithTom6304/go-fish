@@ -1,0 +1,43 @@
+# cargo-mutants configuration for the go-fish workspace.
+#
+# Run with:  cargo mutants
+# Scope it:  cargo mutants --in-diff origin/main
+#            cargo mutants --package go-fish
+#            cargo mutants --file go-fish/src/lib.rs
+#
+# Recommended env override during runs, to keep proptest from dominating wall time:
+#   PROPTEST_CASES=20 cargo mutants ...
+#
+# See `.claude/skills/mutation-coverage/SKILL.md` for the full workflow.
+
+# go-fish-web is pure serde type definitions — nothing meaningful to mutate.
+# main.rs binaries are entry points; mutations there are rarely actionable.
+# build.rs and generated code likewise.
+exclude_globs = [
+    "go-fish-web/**",
+    "**/main.rs",
+    "**/build.rs",
+    "target/**",
+]
+
+# Mutating Debug/Display/Default impls almost always produces equivalent mutants
+# or mutants that are not worth pinning with tests.
+exclude_re = [
+    "impl Debug",
+    "impl Display",
+    "impl Default",
+    "fn fmt",
+]
+
+# The bot integration tests live behind a feature flag — enable it so those
+# tests actually run against each mutant.
+additional_cargo_args = ["--all-features"]
+
+# The complete_games proptest can take a while per case; give mutated builds
+# enough headroom that slow-but-correct runs aren't classed as timeouts.
+timeout_multiplier = 3.0
+minimum_test_timeout = 60
+
+# Prefer nextest when available — it parallelises better than `cargo test`.
+# Falls back automatically if nextest isn't installed.
+test_tool = "nextest"
