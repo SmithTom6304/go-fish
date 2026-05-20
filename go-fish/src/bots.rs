@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 
-use rand::{RngExt as _, SeedableRng};
 use rand::rngs::SmallRng;
+use rand::{RngExt as _, SeedableRng};
 use rand_distr::{Distribution, Normal};
 
 use crate::{CompleteBook, Hook, HookOutcome, HookResult, IncompleteBook, PlayerId, Rank};
@@ -65,8 +65,12 @@ impl SimpleBot {
     /// Build a probability table: for every (opponent_id, rank) pair, estimate
     /// the probability that the opponent currently holds that rank.
     /// Iterates observations oldest→newest so later evidence overrides earlier.
-    fn build_probability_table(&mut self, opponents: &[OpponentView]) -> Vec<(PlayerId, Rank, f32)> {
-        let mut table: std::collections::HashMap<(PlayerId, Rank), f32> = std::collections::HashMap::new();
+    fn build_probability_table(
+        &mut self,
+        opponents: &[OpponentView],
+    ) -> Vec<(PlayerId, Rank, f32)> {
+        let mut table: std::collections::HashMap<(PlayerId, Rank), f32> =
+            std::collections::HashMap::new();
 
         // Compute baseline probabilities from the most recent observation.
         // Baseline = opponent.hand_size / total_remaining_cards_of_rank_in_unknown_hands
@@ -78,14 +82,30 @@ impl SimpleBot {
 
             for rank in all::<Rank>() {
                 // Cards of this rank we can account for: our own hand + our completed books
-                let known_ours = latest.my_hand.iter().filter(|b| b.rank == rank).map(|b| b.cards.len()).sum::<usize>()
-                    + latest.my_completed_books.iter().filter(|b| b.rank == rank).count() * 4
-                    + opponents.iter().flat_map(|o| o.completed_books.iter()).filter(|b| b.rank == rank).count() * 4;
+                let known_ours = latest
+                    .my_hand
+                    .iter()
+                    .filter(|b| b.rank == rank)
+                    .map(|b| b.cards.len())
+                    .sum::<usize>()
+                    + latest
+                        .my_completed_books
+                        .iter()
+                        .filter(|b| b.rank == rank)
+                        .count()
+                        * 4
+                    + opponents
+                        .iter()
+                        .flat_map(|o| o.completed_books.iter())
+                        .filter(|b| b.rank == rank)
+                        .count()
+                        * 4;
                 let remaining = 4usize.saturating_sub(known_ours);
 
                 for opp in opponents {
                     if total_unknown_pool > 0 {
-                        let prob = (opp.hand_size as f32 * remaining as f32) / total_unknown_pool as f32;
+                        let prob =
+                            (opp.hand_size as f32 * remaining as f32) / total_unknown_pool as f32;
                         table.insert((opp.id, rank), prob.min(1.0));
                     } else {
                         table.insert((opp.id, rank), 0.0);
@@ -155,29 +175,37 @@ impl Bot for SimpleBot {
     fn generate_hook(&mut self, valid_targets: &[PlayerId]) -> Hook {
         // Derive hand and opponents from the most recent stored observation,
         // falling back to current_hand when memory_limit == 0.
-        let (my_hand_ranks, opponents): (Vec<Rank>, Vec<OpponentView>) = match self.observations.back() {
-            Some(obs) => {
-                let ranks = obs.my_hand.iter().map(|b| b.rank).collect();
-                let opps = obs.opponents.iter().map(|o| OpponentView {
-                    id: o.id,
-                    hand_size: o.hand_size,
-                    completed_books: o.completed_books.clone(),
-                }).collect();
-                (ranks, opps)
-            }
-            None => {
-                // memory_limit==0 or generate_hook called before any observe.
-                // Use current_hand for a valid rank; no opponent info for probability table.
-                let ranks: Vec<Rank> = self.current_hand.iter().map(|b| b.rank).collect();
-                if ranks.is_empty() {
-                    // Truly no information — return first valid target with a placeholder rank.
-                    // take_turn will reject this if invalid, but this state should not occur
-                    // in a well-driven game (active player always has cards).
-                    return Hook { target: valid_targets[0], rank: Rank::Two };
+        let (my_hand_ranks, opponents): (Vec<Rank>, Vec<OpponentView>) =
+            match self.observations.back() {
+                Some(obs) => {
+                    let ranks = obs.my_hand.iter().map(|b| b.rank).collect();
+                    let opps = obs
+                        .opponents
+                        .iter()
+                        .map(|o| OpponentView {
+                            id: o.id,
+                            hand_size: o.hand_size,
+                            completed_books: o.completed_books.clone(),
+                        })
+                        .collect();
+                    (ranks, opps)
                 }
-                (ranks, vec![])
-            }
-        };
+                None => {
+                    // memory_limit==0 or generate_hook called before any observe.
+                    // Use current_hand for a valid rank; no opponent info for probability table.
+                    let ranks: Vec<Rank> = self.current_hand.iter().map(|b| b.rank).collect();
+                    if ranks.is_empty() {
+                        // Truly no information — return first valid target with a placeholder rank.
+                        // take_turn will reject this if invalid, but this state should not occur
+                        // in a well-driven game (active player always has cards).
+                        return Hook {
+                            target: valid_targets[0],
+                            rank: Rank::Two,
+                        };
+                    }
+                    (ranks, vec![])
+                }
+            };
 
         let table = self.build_probability_table(&opponents);
 
@@ -190,7 +218,10 @@ impl Bot for SimpleBot {
             .max_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal));
 
         match best {
-            Some((target, rank, _)) => Hook { target: *target, rank: *rank },
+            Some((target, rank, _)) => Hook {
+                target: *target,
+                rank: *rank,
+            },
             None => {
                 // No table entry matched (zero-memory or no observations yet).
                 // Pick randomly to avoid deterministic cycles when the deck empties.
@@ -214,6 +245,30 @@ mod tests {
         }
     }
 
+    fn make_complete_book(rank: Rank) -> CompleteBook {
+        CompleteBook {
+            rank,
+            cards: [
+                Card {
+                    rank,
+                    suit: Suit::Clubs,
+                },
+                Card {
+                    rank,
+                    suit: Suit::Diamonds,
+                },
+                Card {
+                    rank,
+                    suit: Suit::Hearts,
+                },
+                Card {
+                    rank,
+                    suit: Suit::Spades,
+                },
+            ],
+        }
+    }
+
     fn make_observation(
         my_hand: Vec<IncompleteBook>,
         opponents: Vec<OpponentView>,
@@ -227,6 +282,35 @@ mod tests {
             deck_size,
             active_player_id: PlayerId::new(0),
             last_hook_outcome,
+        }
+    }
+
+    fn make_observation_with_books(
+        my_hand: Vec<IncompleteBook>,
+        my_completed_books: Vec<CompleteBook>,
+        opponents: Vec<OpponentView>,
+        deck_size: usize,
+        last_hook_outcome: Option<HookOutcome>,
+    ) -> BotObservation {
+        BotObservation {
+            my_hand,
+            my_completed_books,
+            opponents,
+            deck_size,
+            active_player_id: PlayerId::new(0),
+            last_hook_outcome,
+        }
+    }
+
+    fn opponent_with_books(
+        id: u8,
+        hand_size: usize,
+        completed_books: Vec<CompleteBook>,
+    ) -> OpponentView {
+        OpponentView {
+            id: PlayerId::new(id),
+            hand_size,
+            completed_books,
         }
     }
 
@@ -287,11 +371,18 @@ mod tests {
     }
 
     fn opponent(id: u8, hand_size: usize) -> OpponentView {
-        OpponentView { id: PlayerId::new(id), hand_size, completed_books: vec![] }
+        OpponentView {
+            id: PlayerId::new(id),
+            hand_size,
+            completed_books: vec![],
+        }
     }
 
     fn prob_for(table: &[(PlayerId, Rank, f32)], id: u8, rank: Rank) -> Option<f32> {
-        table.iter().find(|(p, r, _)| *p == PlayerId::new(id) && *r == rank).map(|(_, _, p)| *p)
+        table
+            .iter()
+            .find(|(p, r, _)| *p == PlayerId::new(id) && *r == rank)
+            .map(|(_, _, p)| *p)
     }
 
     #[test]
@@ -335,7 +426,12 @@ mod tests {
             vec![make_incomplete_book(Rank::Two, &[Suit::Clubs])],
             vec![opponent(1, 3), opponent(2, 3)],
             20,
-            Some(hook_outcome(1, 2, Rank::Ace, HookResult::Catch(book.clone()))),
+            Some(hook_outcome(
+                1,
+                2,
+                Rank::Ace,
+                HookResult::Catch(book.clone()),
+            )),
         );
         // Now opp2 fishes from opp1 successfully
         let obs2 = make_observation(
@@ -376,6 +472,144 @@ mod tests {
         let opps = vec![opponent(1, 3)];
         let table = bot.build_probability_table(&opps);
         assert_eq!(prob_for(&table, 1, Rank::Ace), Some(0.0));
+    }
+
+    // --- probability table numeric tests ---
+
+    #[test]
+    fn baseline_probability_formula_is_exact() {
+        // bot=0 holds 1 Two; opponent=1 has 4 cards; deck=20 → pool=24.
+        // Rank::Two: known_ours=1 (one card in hand), remaining=3 → prob = 4*3/24 = 0.5
+        // Rank::Ace: known_ours=0, remaining=4                   → prob = 4*4/24 ≈ 0.667
+        let mut bot = SimpleBot::new(PlayerId::new(0), 5, 0.0, 42);
+        bot.observe(make_observation(
+            vec![make_incomplete_book(Rank::Two, &[Suit::Clubs])],
+            vec![opponent(1, 4)],
+            20,
+            None,
+        ));
+        let opps = vec![opponent(1, 4)];
+        let table = bot.build_probability_table(&opps);
+
+        let prob_two = prob_for(&table, 1, Rank::Two).expect("entry for Two must exist");
+        let expected_two = (4.0_f32 * 3.0) / 24.0;
+        assert!(
+            (prob_two - expected_two).abs() < 1e-5,
+            "prob(opp1, Two)={prob_two}, expected {expected_two}",
+        );
+
+        let prob_ace = prob_for(&table, 1, Rank::Ace).expect("entry for Ace must exist");
+        let expected_ace = (4.0_f32 * 4.0) / 24.0;
+        assert!(
+            (prob_ace - expected_ace).abs() < 1e-5,
+            "prob(opp1, Ace)={prob_ace}, expected {expected_ace}",
+        );
+    }
+
+    #[test]
+    fn my_completed_book_zeros_probability_of_that_rank() {
+        // Bot has a complete Ace book: all 4 Aces accounted for → remaining(Ace)=0 → prob=0.
+        let mut bot = SimpleBot::new(PlayerId::new(0), 5, 0.0, 42);
+        bot.observe(make_observation_with_books(
+            vec![],
+            vec![make_complete_book(Rank::Ace)],
+            vec![opponent(1, 4)],
+            20,
+            None,
+        ));
+        let opps = vec![opponent(1, 4)];
+        let table = bot.build_probability_table(&opps);
+        assert_eq!(prob_for(&table, 1, Rank::Ace), Some(0.0));
+    }
+
+    #[test]
+    fn opponent_completed_book_zeros_probability_of_that_rank() {
+        // Opponent has a complete Ace book: those 4 cards accounted for → remaining(Ace)=0.
+        let mut bot = SimpleBot::new(PlayerId::new(0), 5, 0.0, 42);
+        bot.observe(make_observation(
+            vec![],
+            vec![opponent_with_books(
+                1,
+                4,
+                vec![make_complete_book(Rank::Ace)],
+            )],
+            20,
+            None,
+        ));
+        let opps = vec![opponent_with_books(
+            1,
+            4,
+            vec![make_complete_book(Rank::Ace)],
+        )];
+        let table = bot.build_probability_table(&opps);
+        assert_eq!(prob_for(&table, 1, Rank::Ace), Some(0.0));
+    }
+
+    #[test]
+    fn empty_pool_returns_all_zero_without_panic() {
+        // pool = hand_size + deck = 0 + 0 = 0 → all probabilities must be 0.0.
+        let mut bot = SimpleBot::new(PlayerId::new(0), 5, 0.0, 42);
+        bot.observe(make_observation(vec![], vec![opponent(1, 0)], 0, None));
+        let opps = vec![opponent(1, 0)];
+        let table = bot.build_probability_table(&opps);
+        for (_, _, prob) in &table {
+            assert_eq!(*prob, 0.0, "expected 0.0 for empty pool, got {prob}");
+        }
+    }
+
+    #[test]
+    fn gofish_outcome_zeros_target_probability() {
+        // GoFish: fisher=opp1 (holds King), target=opp2 (doesn't have King).
+        // Inference: P(opp1, King)=1.0, P(opp2, King)=0.0.
+        let mut bot = SimpleBot::new(PlayerId::new(0), 5, 0.0, 42);
+        bot.observe(make_observation(
+            vec![make_incomplete_book(Rank::King, &[Suit::Clubs])],
+            vec![opponent(1, 3), opponent(2, 3)],
+            20,
+            Some(hook_outcome(1, 2, Rank::King, HookResult::GoFish)),
+        ));
+        let opps = vec![opponent(1, 3), opponent(2, 3)];
+        let table = bot.build_probability_table(&opps);
+        assert_eq!(
+            prob_for(&table, 1, Rank::King),
+            Some(1.0),
+            "fisher should be P=1"
+        );
+        assert_eq!(
+            prob_for(&table, 2, Rank::King),
+            Some(0.0),
+            "target should be P=0"
+        );
+    }
+
+    #[test]
+    fn positive_noise_is_applied_and_produces_unbiased_probabilities() {
+        // With error_margin=1.0, repeated calls should produce distinct values (noise is
+        // applied) and the mean should remain close to the noiseless baseline (~0.5).
+        let mut bot = SimpleBot::new(PlayerId::new(0), 5, 1.0, 42);
+        bot.observe(make_observation(
+            vec![make_incomplete_book(Rank::Two, &[Suit::Clubs])],
+            vec![opponent(1, 4)],
+            20,
+            None,
+        ));
+        let opps = vec![opponent(1, 4)];
+        let probs: Vec<f32> = (0..100)
+            .map(|_| prob_for(&bot.build_probability_table(&opps), 1, Rank::Two).unwrap())
+            .collect();
+
+        let min = probs.iter().cloned().fold(f32::INFINITY, f32::min);
+        let max = probs.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        assert!(
+            min < max,
+            "noise should produce distinct values across calls; all returned {min}"
+        );
+
+        let mean: f32 = probs.iter().sum::<f32>() / probs.len() as f32;
+        assert!(
+            mean > 0.35,
+            "mean {mean:.3} too low; expected ~0.5 for additive noise"
+        );
     }
 
     // --- generate_hook tests ---
@@ -459,19 +693,21 @@ mod tests {
             None,
         ));
         let valid = [PlayerId::new(1), PlayerId::new(2)];
-        let results: Vec<_> = (0..50).map(|_| {
-            // re-observe each time so the hand is fresh
-            bot.observe(make_observation(
-                vec![
-                    make_incomplete_book(Rank::Two, &[Suit::Clubs]),
-                    make_incomplete_book(Rank::Three, &[Suit::Hearts]),
-                ],
-                vec![opponent(1, 3), opponent(2, 3)],
-                20,
-                None,
-            ));
-            bot.generate_hook(&valid)
-        }).collect();
+        let results: Vec<_> = (0..50)
+            .map(|_| {
+                // re-observe each time so the hand is fresh
+                bot.observe(make_observation(
+                    vec![
+                        make_incomplete_book(Rank::Two, &[Suit::Clubs]),
+                        make_incomplete_book(Rank::Three, &[Suit::Hearts]),
+                    ],
+                    vec![opponent(1, 3), opponent(2, 3)],
+                    20,
+                    None,
+                ));
+                bot.generate_hook(&valid)
+            })
+            .collect();
 
         // Verify all results are valid
         for h in &results {
@@ -479,10 +715,11 @@ mod tests {
         }
 
         // With noise there should be at least two distinct (target, rank) combos
-        let distinct: std::collections::HashSet<(u8, Rank)> = results
-            .iter()
-            .map(|h| (h.target.0, h.rank))
-            .collect();
-        assert!(distinct.len() > 1, "Expected varied choices with high noise");
+        let distinct: std::collections::HashSet<(u8, Rank)> =
+            results.iter().map(|h| (h.target.0, h.rank)).collect();
+        assert!(
+            distinct.len() > 1,
+            "Expected varied choices with high noise"
+        );
     }
 }
