@@ -27,6 +27,13 @@ exclude_re = [
     "impl Display",
     "impl Default",
     "fn fmt",
+    # Delegates directly to Vec::is_empty; only called from debug! logging macros.
+    "Deck::is_empty",
+    # Normal::new(0.0, 0.0) is valid and samples 0.0, so >= behaves identically
+    # to > for any non-negative error_margin.
+    "replace > with >= in SimpleBot::build_probability_table",
+    # Symmetric noise has the same expected value whether added or subtracted.
+    "replace \\+ with - in SimpleBot::build_probability_table",
 ]
 
 # The bot integration tests live behind a feature flag — enable it so those
