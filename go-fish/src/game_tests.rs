@@ -210,6 +210,184 @@ fn final_player_completes_final_book_by_drawing_then_game_is_finished() {
     assert!(game.is_finished);
 }
 
+// --- Deck tests ---
+
+#[test]
+fn deck_len_reflects_card_count() {
+    let mut deck = Deck::new();
+    assert_eq!(deck.len(), 52);
+    deck.draw();
+    assert_eq!(deck.len(), 51);
+}
+
+#[test]
+fn shuffle_reorders_cards() {
+    let ordered: Vec<Card> = {
+        let mut d = Deck::new();
+        std::iter::from_fn(|| d.draw()).collect()
+    };
+    let shuffled: Vec<Card> = {
+        let mut d = Deck::new().shuffle();
+        std::iter::from_fn(|| d.draw()).collect()
+    };
+    // With 52! permutations the probability of a random shuffle matching
+    // the ordered sequence is negligible.
+    assert_ne!(ordered, shuffled);
+}
+
+// --- GameResult tests ---
+
+#[test]
+fn game_result_winner_has_most_books() {
+    let make_book = |rank: Rank| CompleteBook {
+        rank,
+        cards: [
+            Card { rank, suit: Suit::Clubs },
+            Card { rank, suit: Suit::Diamonds },
+            Card { rank, suit: Suit::Hearts },
+            Card { rank, suit: Suit::Spades },
+        ],
+    };
+    let game = Game {
+        deck: Deck { cards: vec![] },
+        players: vec![],
+        inactive_players: vec![
+            InactivePlayer {
+                id: PlayerId(1),
+                completed_books: vec![make_book(Rank::Two), make_book(Rank::Three)],
+            },
+            InactivePlayer {
+                id: PlayerId(2),
+                completed_books: vec![make_book(Rank::Ace)],
+            },
+        ],
+        player_turn: 0,
+        is_finished: true,
+    };
+    let result = game.get_game_result().expect("game is finished");
+    assert_eq!(result.winners.len(), 1);
+    assert_eq!(result.winners[0].id, PlayerId(1));
+    assert_eq!(result.losers.len(), 1);
+    assert_eq!(result.losers[0].id, PlayerId(2));
+}
+
+// --- Turn-advance tests ---
+
+fn player_with_cards(id: u8, rank: Rank, suits: &[Suit]) -> Player {
+    Player {
+        id: PlayerId(id),
+        hand: Hand {
+            books: vec![IncompleteBook {
+                rank,
+                cards: suits.iter().map(|&suit| Card { rank, suit }).collect(),
+            }],
+        },
+        completed_books: vec![],
+    }
+}
+
+fn player_with_two_books(
+    id: u8,
+    rank1: Rank, suits1: &[Suit],
+    rank2: Rank, suits2: &[Suit],
+) -> Player {
+    Player {
+        id: PlayerId(id),
+        hand: Hand {
+            books: vec![
+                IncompleteBook {
+                    rank: rank1,
+                    cards: suits1.iter().map(|&suit| Card { rank: rank1, suit }).collect(),
+                },
+                IncompleteBook {
+                    rank: rank2,
+                    cards: suits2.iter().map(|&suit| Card { rank: rank2, suit }).collect(),
+                },
+            ],
+        },
+        completed_books: vec![],
+    }
+}
+
+#[test]
+fn turn_advances_to_next_player_on_go_fish() {
+    // P1 (turn=0) GoFishes from P2. Turn must move to P2 (idx=1), not stay on P1.
+    let p1 = player_with_cards(1, Rank::Two, &[Suit::Clubs]);
+    let p2 = player_with_cards(2, Rank::King, &[Suit::Clubs]);
+    let p3 = player_with_cards(3, Rank::King, &[Suit::Hearts]);
+    let mut game = Game {
+        deck: Deck { cards: vec![] },
+        players: vec![p1, p2, p3],
+        inactive_players: vec![],
+        player_turn: 0,
+        is_finished: false,
+    };
+    game.take_turn(Hook { target: PlayerId(2), rank: Rank::Two }).unwrap();
+    let current = game.get_current_player().expect("game should not be finished");
+    assert_eq!(current.id, PlayerId(2));
+}
+
+#[test]
+fn turn_skips_eliminated_player_to_correct_next() {
+    // P1 (turn=0) GoFishes from P4. P2 (next in order) has an empty hand and the deck
+    // is empty, so P2 goes inactive mid-advance. This forces the loop-internal
+    // turn update. The correct next active player is P4.
+    let p1 = player_with_cards(1, Rank::Two, &[Suit::Clubs]);
+    let p2 = Player { id: PlayerId(2), hand: Hand { books: vec![] }, completed_books: vec![] };
+    let p3 = player_with_cards(3, Rank::King, &[Suit::Clubs]);
+    let p4 = player_with_cards(4, Rank::King, &[Suit::Hearts]);
+    let mut game = Game {
+        deck: Deck { cards: vec![] },
+        players: vec![p1, p2, p3, p4],
+        inactive_players: vec![],
+        player_turn: 0,
+        is_finished: false,
+    };
+    game.take_turn(Hook { target: PlayerId(4), rank: Rank::Two }).unwrap();
+    let current = game.get_current_player().expect("game should not be finished");
+    assert_eq!(current.id, PlayerId(4));
+}
+
+#[test]
+fn player_turn_adjusted_when_first_player_goes_inactive() {
+    // P1 (idx=0) catches P2's last Two, completing 4 Twos. Empty deck → P1 inactive.
+    // Remaining order: [P2, P3, P4]. Next turn should be P2.
+    let p1 = player_with_cards(1, Rank::Two, &[Suit::Clubs, Suit::Diamonds, Suit::Hearts]);
+    let p2 = player_with_two_books(2, Rank::Two, &[Suit::Spades], Rank::King, &[Suit::Clubs]);
+    let p3 = player_with_cards(3, Rank::King, &[Suit::Diamonds]);
+    let p4 = player_with_cards(4, Rank::King, &[Suit::Hearts]);
+    let mut game = Game {
+        deck: Deck { cards: vec![] },
+        players: vec![p1, p2, p3, p4],
+        inactive_players: vec![],
+        player_turn: 0,
+        is_finished: false,
+    };
+    game.take_turn(Hook { target: PlayerId(2), rank: Rank::Two }).unwrap();
+    let current = game.get_current_player().expect("game should not be finished");
+    assert_eq!(current.id, PlayerId(2));
+}
+
+#[test]
+fn player_turn_adjusted_when_mid_player_goes_inactive() {
+    // P2 (idx=1) catches P3's last Ace, completing 4 Aces. Empty deck → P2 inactive.
+    // Remaining order: [P1, P3, P4]. Next turn should be P3 (the player after P2).
+    let p1 = player_with_cards(1, Rank::King, &[Suit::Clubs]);
+    let p2 = player_with_cards(2, Rank::Ace, &[Suit::Clubs, Suit::Diamonds, Suit::Hearts]);
+    let p3 = player_with_two_books(3, Rank::Ace, &[Suit::Spades], Rank::King, &[Suit::Diamonds]);
+    let p4 = player_with_cards(4, Rank::King, &[Suit::Hearts]);
+    let mut game = Game {
+        deck: Deck { cards: vec![] },
+        players: vec![p1, p2, p3, p4],
+        inactive_players: vec![],
+        player_turn: 1,
+        is_finished: false,
+    };
+    game.take_turn(Hook { target: PlayerId(3), rank: Rank::Ace }).unwrap();
+    let current = game.get_current_player().expect("game should not be finished");
+    assert_eq!(current.id, PlayerId(3));
+}
+
 #[cfg(test)]
 mod deck_tests {
     use crate::{Card, Deck};
